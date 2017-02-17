@@ -262,6 +262,97 @@ class HostGuestAssociationReport(AbstractVirtReport):
         return hashlib.sha256(json.dumps(self.serializedAssociation, sort_keys=True)).hexdigest()
 
 
+class IntervalThread(Thread):
+    def __init__(self, logger, config, source, dest, terminate_event,
+                 interval, oneshot=False):
+        self.logger = logger
+        self.config = config
+        self.source = source
+        self.dest = dest
+        self.terminate_event = terminate_event
+        self._internal_terminate_event = Event()
+        self.interval = interval
+        self._oneshot = oneshot
+        super(IntervalThread, self).__init__()
+
+    def wait(self, wait_time):
+        '''
+        Wait `wait_time` seconds, could be interrupted by setting _terminate_event or _internal_terminate_event.
+        '''
+        for i in range(wait_time):
+            if self.is_terminated():
+                break
+            time.sleep(1)
+
+    def is_terminated(self):
+        """
+
+        @return: Returns true if either the internal terminate event is set or
+                 the terminate event given in the init is set
+        """
+        return self._internal_terminate_event.is_set() or \
+               self.terminate_event.is_set()
+
+    def stop(self):
+        """
+        Causes this thread to stop at the next idle moment
+        """
+        self._internal_terminate_event.set()
+
+    def _run(self):
+        # In abstract, retrieve something from source,
+        # give that something (or some variation of it) to dest
+        raise NotImplementedError("Should be implemented in subclasses")
+
+    def run(self):
+        '''
+        Wrapper around `_run` method that just catches the error messages.
+        '''
+        self.logger.debug("Thread '%s' started", self.config.name)
+        try:
+            while not self.is_terminated():
+                has_error = False
+                try:
+                    self._run()
+                except VirtError as e:
+                    if not self.is_terminated():
+                        self.logger.error("Thread '%s' fails with error: %s",
+                                          self.config.name, str(e))
+                        has_error = True
+                except Exception:
+                    if not self.is_terminated():
+                        self.logger.exception("Thread '%s' fails with "
+                                              "exception:", self.config.name)
+                        has_error = True
+
+                if self._oneshot:
+                    if has_error:
+                        self.enqueue(ErrorReport(self.config))
+                    self.logger.debug("Thread '%s' stopped after sending one "
+                                      "report", self.config.name)
+                    return
+
+                if self.is_terminated():
+                    self.logger.debug("Thread '%s' terminated",
+                                      self.config.name)
+                    return
+
+                self.logger.info("Waiting %s seconds before performing action"
+                                 "again '%s'", self._interval, self.config.name)
+                self.wait(self._interval)
+        except KeyboardInterrupt:
+            self.logger.debug("Thread '%s' interrupted", self.config.name)
+            self.cleanup()
+            sys.exit(1)
+
+    def cleanup(self):
+        '''
+        Perform cleaning up actions before termination.
+        '''
+        pass
+
+
+
 class Virt(Thread):
     '''
     Virtualization backend abstract class.

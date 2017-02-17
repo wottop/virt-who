@@ -263,17 +263,18 @@ class HostGuestAssociationReport(AbstractVirtReport):
 
 
 class IntervalThread(Thread):
-    def __init__(self, logger, config, source, dest, terminate_event,
-                 interval, oneshot=False):
+    def __init__(self, logger, config, source=None, dest=None,
+                 terminate_event=None, interval=None, oneshot=False):
         self.logger = logger
         self.config = config
         self.source = source
         self.dest = dest
-        self.terminate_event = terminate_event
         self._internal_terminate_event = Event()
-        self.interval = interval
+        self.terminate_event = terminate_event or self._internal_terminate_event
+        self.interval = interval or DefaultInterval
         self._oneshot = oneshot
         super(IntervalThread, self).__init__()
+        self.daemon = True
 
     def wait(self, wait_time):
         '''
@@ -291,7 +292,7 @@ class IntervalThread(Thread):
                  the terminate event given in the init is set
         """
         return self._internal_terminate_event.is_set() or \
-               self.terminate_event.is_set()
+            self.terminate_event.is_set()
 
     def stop(self):
         """
@@ -302,6 +303,46 @@ class IntervalThread(Thread):
     def _run(self):
         # In abstract, retrieve something from source,
         # give that something (or some variation of it) to dest
+        """
+        This method could be reimplemented in subclass to provide
+        it's own way of waiting for changes (like event monitoring)
+        """
+        self.prepare()
+        while not self.is_terminated():
+            start_time = datetime.now()
+            data_to_send = self._get_data()
+            self._send_data(data_to_send)
+            if self._oneshot:
+                break
+            end_time = datetime.now()
+
+            delta = end_time - start_time
+            # for python2.6, 2.7 has total_seconds method
+            delta_seconds = ((
+                             delta.days * 86400 + delta.seconds) * 10 ** 6 +
+                             delta.microseconds) / 10 ** 6
+
+            wait_time = self.interval - int(delta_seconds)
+
+            if wait_time < 0:
+                self.logger.debug(
+                    "Getting the data took longer than the configured "
+                    "interval. Trying again immediately.")
+                continue
+
+            self.wait(wait_time)
+
+    def _get_data(self):
+        """
+        This method gathers data from the source provided to the thread
+        @return: The data from the source
+        """
+        raise NotImplementedError("Should be implemented in subclasses")
+
+    def _send_data(self, data_to_send):
+        """
+        @param data_to_send: The data to be given to the dest
+        """
         raise NotImplementedError("Should be implemented in subclasses")
 
     def run(self):
@@ -327,7 +368,7 @@ class IntervalThread(Thread):
 
                 if self._oneshot:
                     if has_error:
-                        self.enqueue(ErrorReport(self.config))
+                        self._send_data(ErrorReport(self.config))
                     self.logger.debug("Thread '%s' stopped after sending one "
                                       "report", self.config.name)
                     return
@@ -338,8 +379,8 @@ class IntervalThread(Thread):
                     return
 
                 self.logger.info("Waiting %s seconds before performing action"
-                                 "again '%s'", self._interval, self.config.name)
-                self.wait(self._interval)
+                                 "again '%s'", self.interval, self.config.name)
+                self.wait(self.interval)
         except KeyboardInterrupt:
             self.logger.debug("Thread '%s' interrupted", self.config.name)
             self.cleanup()
@@ -351,31 +392,37 @@ class IntervalThread(Thread):
         '''
         pass
 
+    def prepare(self):
+        """
+        Do pre-mainloop initialization of the source and dest,
+        for example logging in.
+        """
+        pass
 
 
-class Virt(Thread):
-    '''
+class Virt(IntervalThread):
+    """
     Virtualization backend abstract class.
 
     This class must be inherited for each of the virtualization backends.
 
     Run `start` method to start obtaining data about virtual guests. The data
-    will be pushed to the `queue` that is parameter of the `start` method.
+    will be pushed to the dest(ination) that is parameter of the `__init__`
+    method.
+    """
 
-    Note that this class is a subclass of `threading.Thread` class.
-    '''
-    def __init__(self, logger, config):
-        self.logger = logger
-        self.config = config
-        self._internal_terminate_event = Event()
-        super(Virt, self).__init__()
-        self.daemon = True
+    def __init__(self, logger, config, dest, terminate_event=None,
+                 interval=None, oneshot=False):
+        super(Virt, self).__init__(logger, config, dest=dest,
+                                   terminate_event=terminate_event,
+                                   interval=interval, oneshot=oneshot)
 
     def __repr__(self):
         return '{1}({0.logger!r}, {0.config!r})'.format(self, self.__class__.__name__)
 
     @classmethod
-    def fromConfig(cls, logger, config):
+    def from_config(cls, logger, config, dest,
+                    terminate_event=None, interval=None, oneshot=False):
         """
         Create instance of inherited class based on the config.
         """
@@ -391,48 +438,18 @@ class Virt(Thread):
 
         for subcls in cls.__subclasses__():
             if config.type == subcls.CONFIG_TYPE:
-                return subcls(logger, config)
+                return subcls(logger, config, dest,
+                              terminate_event=terminate_event,
+                              interval=interval, oneshot=oneshot)
         raise KeyError("Invalid config type: %s" % config.type)
 
-    def start(self, queue, terminate_event, interval=None, oneshot=False):  # pylint: disable=W0221
-        '''
-        Start obtaining data from the hypervisor/host system. The data will
-        be fetched (as instances of AbstractVirtReport subclasses) to the
-        `queue` parameter (which should be instance of `Queue.Queue` object.
-
-        `terminate_event` is `threading.Event` instance and will be set when
-        the thread should be terminated.
-
-        `interval` parameter determines maximal interval, how ofter should
-        the data be reported. If the virt backend supports events, it might
-        be less often.
-
-        If `oneshot` parameter is True, the data will be reported only once
-        and the thread will be terminated after that.
-        '''
-        self._queue = queue
-        self._terminate_event = terminate_event
-        if interval is not None:
-            self._interval = interval
-        else:
-            self._interval = DefaultInterval
-        self._oneshot = oneshot
-        super(Virt, self).start()
-
-    def start_sync(self, queue, terminate_event, interval=None, oneshot=False):
+    def start_sync(self):
         '''
         This method is same as `start()` but runs synchronously, it does NOT
         create new thread.
 
         Use it only in specific cases!
         '''
-        self._queue = queue
-        self._terminate_event = terminate_event
-        if interval is not None:
-            self._interval = interval
-        else:
-            self._interval = DefaultInterval
-        self._oneshot = oneshot
         self._run()
 
     def _get_report(self):
@@ -441,96 +458,21 @@ class Virt(Thread):
         else:
             return DomainListReport(self.config, self.listDomains())
 
-    def wait(self, wait_time):
-        '''
-        Wait `wait_time` seconds, could be interrupted by setting _terminate_event or _internal_terminate_event.
-        '''
-        for i in range(wait_time):
-            if self.is_terminated():
-                break
-            time.sleep(1)
+    def _get_data(self):
+        """
+        Gathers the data from the source.
+        Could be overridden to specify how to get data other than a report.
+        For example in destination threads.
+        @return: The data from the source to be passed along to the dest
+        """
+        return self._get_report()
 
-    def stop(self):
-        self._internal_terminate_event.set()
-
-    def is_terminated(self):
-        return self._internal_terminate_event.is_set() or self._terminate_event.is_set()
-
-    def enqueue(self, report):
+    def _send_data(self, data_to_send):
         if self.is_terminated():
             sys.exit(0)
-        self.logger.debug('Report for config "%s" gathered, putting to queue for sending', report.config.name)
-        self._queue.put(report)
-
-    def run(self):
-        '''
-        Wrapper around `_run` method that just catches the error messages.
-        '''
-        self.logger.debug("Virt backend '%s' started", self.config.name)
-        try:
-            while not self.is_terminated():
-                has_error = False
-                try:
-                    self._run()
-                except VirtError as e:
-                    if not self.is_terminated():
-                        self.logger.error("Virt backend '%s' fails with error: %s", self.config.name, str(e))
-                        has_error = True
-                except Exception:
-                    if not self.is_terminated():
-                        self.logger.exception("Virt backend '%s' fails with exception:", self.config.name)
-                        has_error = True
-
-                if self._oneshot:
-                    if has_error:
-                        self.enqueue(ErrorReport(self.config))
-                    self.logger.debug("Virt backend '%s' stopped after sending one report", self.config.name)
-                    return
-
-                if self.is_terminated():
-                    self.logger.debug("Virt backend '%s' terminated", self.config.name)
-                    return
-
-                self.logger.info("Waiting %s seconds before retrying backend '%s'", self._interval, self.config.name)
-                self.wait(self._interval)
-        except KeyboardInterrupt:
-            self.logger.debug("Virt backend '%s' interrupted", self.config.name)
-            self.cleanup()
-            sys.exit(1)
-
-    def _run(self):
-        '''
-        Run the endless loop that will fill the `_queue` with reports.
-
-        This method could be reimplemented in subclass to provide
-        it's own way of waiting for changes (like event monitoring)
-        '''
-        self.prepare()
-        while not self.is_terminated():
-            start_time = datetime.now()
-            report = self._get_report()
-            self.enqueue(report)
-            if self._oneshot:
-                break
-            end_time = datetime.now()
-
-            delta = end_time - start_time
-            # for python2.6, 2.7 has total_seconds method
-            delta_seconds = ((delta.days * 86400 + delta.seconds) * 10**6 + delta.microseconds) / 10**6
-
-            wait_time = self._interval - int(delta_seconds)
-
-            if wait_time < 0:
-                self.logger.debug("Getting the host/guests association took too long, interval waiting is skipped")
-                continue
-
-            self.wait(wait_time)
-
-    def prepare(self):
-        '''
-        Do pre-mainloop initialization of the backend, for example logging in.
-        '''
-        pass
+        self.logger.debug('Report for config "%s" gathered, placing in '
+                          'datastore', data_to_send.config.name)
+        self.dest.put(data_to_send)
 
     def isHypervisor(self):
         """
@@ -554,9 +496,3 @@ class Virt(Thread):
         return value of isHypervisor method.
         '''
         raise NotImplementedError('This should be reimplemented in subclass')
-
-    def cleanup(self):
-        '''
-        Perform cleaning up actions before termination.
-        '''
-        pass

@@ -69,3 +69,31 @@ class Manager(object):
                 return subcls(logger, options)
 
         raise KeyError("Invalid config type: %s" % smType)
+
+    @classmethod
+    def fromInfo(cls, logger, options, info):
+        """
+        @param logger: The logging object to pass into the new manager object
+        @type logger: logger
+
+        @param options: The options object to create a manager with.
+
+        @param info: The config.Info object to be used to determine which
+        manager object to create
+        @type info: virtwho.config.Info
+
+        @return: An initialized Manager subclass for the given info object
+        @rtype: manager.Manager
+        """
+        from virtwho.manager.subscriptionmanager import SubscriptionManager
+        from virtwho.manager.satellite import Satellite
+
+        from virtwho.config import Satellite6DestinationInfo, \
+            Satellite5DestinationInfo
+
+        info_to_manager_map = {
+            Satellite5DestinationInfo: Satellite,
+            Satellite6DestinationInfo: SubscriptionManager
+        }
+
+        return info_to_manager_map[type(info)](logger, options)

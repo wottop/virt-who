@@ -434,7 +434,11 @@ class DestinationThread(IntervalThread):
         # The polling interval has not been implemented as configurable yet
         # Until the config includes the polling_interval attribute
         # this will end up being the interval.
-        self.polling_interval = self.config.polling_interval or self.interval
+        try:
+            polling_interval = self.config.polling_interval
+        except AttributeError:
+            polling_interval = self.interval
+        self.polling_interval = polling_interval
         # This is used when there is some reason to modify how long we wait
         # EX when we get a 429 back from the server, this value will be the
         # value of the retry_after header.
@@ -448,9 +452,7 @@ class DestinationThread(IntervalThread):
         reports = {}
         for source_key in self.source_keys:
             report = self.source.get(source_key, None)
-            if isinstance(report, ErrorReport):
-                continue
-            if report.hash == self.last_report_for_source[source_key]:
+            if report.hash == self.last_report_for_source.get(source_key, None):
                 self.logger.debug('Duplicate report found, ignoring')
                 continue
             reports[source_key] = report
@@ -470,7 +472,7 @@ class DestinationThread(IntervalThread):
             self._internal_terminate_event.set()
             return
 
-        batch_mapping = {}  # All the Host-guest mappings together
+        all_hypervisors = [] # All the Host-guest mappings together
         DomainListReports = []  # Source_key to DomainListReport
         reports_batched = []  # Reports put together and sent as one
         sources_sent = []  # Sources we have dealt with this run
@@ -483,7 +485,7 @@ class DestinationThread(IntervalThread):
                 continue
             if isinstance(report, HostGuestAssociationReport):
                 # These reports are put into one report to send at once
-                batch_mapping.update(report.association['hypervisors'])
+                all_hypervisors.extend(report.association['hypervisors'])
                 # Keep track of those reports that we have
                 reports_batched.append(source_key)
                 continue
@@ -498,12 +500,12 @@ class DestinationThread(IntervalThread):
                     # Consider this source dealt with if we are in oneshot mode
                     sources_sent.append(source_key)
 
-        if batch_mapping:
+        if all_hypervisors:
             # Modify the batched dict to be in the form expected for
             # HostGuestAssociationReports
-            batch_mapping = {'hypervisors': batch_mapping}
+            all_hypervisors = {'hypervisors': all_hypervisors}
             batch_host_guest_report = HostGuestAssociationReport(self.config,
-                                                                 batch_mapping)
+                                                                 all_hypervisors)
             result = None
             while result is None:
                 try:
@@ -517,14 +519,11 @@ class DestinationThread(IntervalThread):
                     self.interval_modifier = e.retry_after
                 self.wait(wait_time=self.interval_modifier)
                 self.interval_modifier = 0
-
             # Poll for async results if async
             while batch_host_guest_report.state not in [
                 AbstractVirtReport.STATE_CANCELED,
                 AbstractVirtReport.STATE_FAILED,
                 AbstractVirtReport.STATE_FINISHED]:
-                # TODO: Decide what interval we should actually wait for
-                # For now wait for interval time
                 if self.interval_modifier != 0:
                     wait_time = self.interval_modifier
                     self.interval_modifier = 0
@@ -538,6 +537,9 @@ class DestinationThread(IntervalThread):
                                       'state, checking again later')
                     self.interval_modifier = e.retry_after
 
+            # If the batch report did not reach the finished state, we do not
+            #  want to update which report we last sent (as we might want to
+            #  try to send the same report again next time)
             if batch_host_guest_report.state == \
                     AbstractVirtReport.STATE_FINISHED:
                 # Update the hash of the info last sent for each source
@@ -557,6 +559,7 @@ class DestinationThread(IntervalThread):
                     sources_sent.append(source_key)
                     self.last_report_for_source[source_key] = data_to_send[
                         source_key].hash
+                    retry = False
                 except ManagerError:
                     self.logger.debug("Error in manager, unable to send virt "
                                       "guests for source: %s" % source_key)

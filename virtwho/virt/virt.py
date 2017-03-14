@@ -28,6 +28,7 @@ import json
 import hashlib
 import re
 import fnmatch
+from virtwho.config import NotSetSentinel
 from virtwho.manager import ManagerError, ManagerThrottleError
 
 try:
@@ -172,6 +173,10 @@ class AbstractVirtReport(object):
     def state(self, value):
         self._state = value
 
+    @property
+    def hash(self):
+        return hash(self)
+
 
 class ErrorReport(AbstractVirtReport):
     '''
@@ -214,14 +219,29 @@ class HostGuestAssociationReport(AbstractVirtReport):
     '''
     Report from virt backend about host/guest association on given hypervisor.
     '''
-    def __init__(self, config, assoc, state=AbstractVirtReport.STATE_CREATED):
+    def __init__(self, config, assoc, state=AbstractVirtReport.STATE_CREATED,
+                 exclude_hosts=None, filter_hosts=None):
         super(HostGuestAssociationReport, self).__init__(config, state)
         self._assoc = assoc
+        if exclude_hosts is None:
+            try:
+                exclude_hosts = self._config.exclude_hosts
+            except AttributeError:
+                # We do not have a config that has this attribute
+                pass
+        if filter_hosts is None:
+            try:
+                filter_hosts = self._config.filter_hosts
+            except AttributeError:
+                # We do not have a config with this attribute
+                pass
+        self.exclude_hosts = exclude_hosts
+        self.filter_hosts = filter_hosts
 
     def __repr__(self):
         return 'HostGuestAssociationReport({0.config!r}, {0._assoc!r}, {0.state!r})'.format(self)
 
-    def _filter(self,host,filterlist):
+    def _filter(self, host, filterlist):
         for i in filterlist:
             if fnmatch.fnmatch(host.lower(), i.lower()):
                 # match is found
@@ -241,11 +261,13 @@ class HostGuestAssociationReport(AbstractVirtReport):
         logger = logging.getLogger("virtwho")
         assoc = []
         for host in self._assoc['hypervisors']:
-            if self._config.exclude_hosts is not None and self._filter(host.hypervisorId,self._config.exclude_hosts):
+            if self.exclude_hosts is not None and self._filter(
+                    host.hypervisorId, self.exclude_hosts):
                 logger.debug("Skipping host '%s' because its uuid is excluded", host.hypervisorId)
                 continue
 
-            if self._config.filter_hosts is not None and not self._filter(host.hypervisorId,self._config.filter_hosts):
+            if self.filter_hosts is not None and not self._filter(
+                    host.hypervisorId,self.filter_hosts):
                 logger.debug("Skipping host '%s' because its uuid is not included", host.hypervisorId)
                 continue
 
@@ -272,10 +294,10 @@ class IntervalThread(Thread):
         self.dest = dest
         self._internal_terminate_event = Event()
         self.terminate_event = terminate_event or self._internal_terminate_event
-        self.interval = interval or DefaultInterval
+        self.interval = interval or config.interval or DefaultInterval
         self._oneshot = oneshot
         super(IntervalThread, self).__init__()
-        self.daemon = True
+        # self.daemon = True
 
     def wait(self, wait_time):
         '''
@@ -378,7 +400,7 @@ class IntervalThread(Thread):
                     return
 
                 self.logger.info("Waiting %s seconds before performing action"
-                                 "again '%s'", self.interval, self.config.name)
+                                 " again '%s'", self.interval, self.config.name)
                 self.wait(self.interval)
         except KeyboardInterrupt:
             self.logger.debug("Thread '%s' interrupted", self.config.name)
@@ -422,10 +444,14 @@ class DestinationThread(IntervalThread):
         @type dest: Manager
         """
         if not isinstance(source_keys, list):
+            print source_keys
             raise ValueError("Source keys must be a list")
         self.source_keys = source_keys
         self.last_report_for_source = {}  # Source_key to hash of last report
         self.options = options
+        self.reports_to_print = []  # A list of reports we would send but are
+        #  going to print instead, to be used by the owner of the thread
+        # after the thread has been killed
         super(DestinationThread, self).__init__(logger, config, source=source,
                                                 dest=dest,
                                                 terminate_event=terminate_event,
@@ -451,7 +477,19 @@ class DestinationThread(IntervalThread):
         """
         reports = {}
         for source_key in self.source_keys:
-            report = self.source.get(source_key, None)
+            report = self.source.get(source_key, NotSetSentinel)
+            if self.options.print_ or self._oneshot:
+                # If we are printing we want to make sure we get one report
+                # per source
+                self.logger.debug("GETTING DATA FOR SOURCE: %s" % source_key)
+                while report is NotSetSentinel:
+                    self.wait(1)  # wait for 1 second before trying again
+                    report = self.source.get(source_key, NotSetSentinel)
+            self.logger.debug("REPORT: %s" % report)
+            if report is None or report is NotSetSentinel:
+                self.logger.debug("REPORT APPEARS TO BE NONE OR NOTSET "
+                                  "SKIPPING")
+                continue
             if report.hash == self.last_report_for_source.get(source_key, None):
                 self.logger.debug('Duplicate report found, ignoring')
                 continue
@@ -471,20 +509,27 @@ class DestinationThread(IntervalThread):
             self.logger.info('Error report received, shutting down')
             self._internal_terminate_event.set()
             return
-
+        self.logger.debug("IT APPEARS WE HAVE DATA TO SEND")
         all_hypervisors = [] # All the Host-guest mappings together
-        DomainListReports = []  # Source_key to DomainListReport
-        reports_batched = []  # Reports put together and sent as one
+        DomainListReports = []  # Source_keys of DomainListReports
+        reports_batched = []  # Source_keys of reports to be sent as one
         sources_sent = []  # Sources we have dealt with this run
 
         # Reports of different types are handled differently
         for source_key, report in data_to_send.iteritems():
             if isinstance(report, DomainListReport):
                 # These are sent one at a time to the destination
+                self.logger.debug("FOUND DOMAINGUESTLIST REPORT FOR SOURCE: "
+                                  "%s" % source_key)
                 DomainListReports.append(source_key)
                 continue
             if isinstance(report, HostGuestAssociationReport):
                 # These reports are put into one report to send at once
+                self.logger.debug("FOUND HYPERVISORGUESTASSOCIATIONREPORT FOR SOURCE: %s" % source_key)
+                self.logger.debug("REPORT ASSOCIATION: %s" %
+                                  report.association['hypervisors'])
+                self.logger.debug("REPORT _ASSOC: %s" %
+                                  report._assoc)
                 all_hypervisors.extend(report.association['hypervisors'])
                 # Keep track of those reports that we have
                 reports_batched.append(source_key)
@@ -503,77 +548,100 @@ class DestinationThread(IntervalThread):
         if all_hypervisors:
             # Modify the batched dict to be in the form expected for
             # HostGuestAssociationReports
+            self.logger.debug("ALL HYPERVISORS: %s" % all_hypervisors)
             all_hypervisors = {'hypervisors': all_hypervisors}
             batch_host_guest_report = HostGuestAssociationReport(self.config,
                                                                  all_hypervisors)
-            result = None
-            while result is None:
-                try:
-                    result = self.dest.hypervisorCheckIn(batch_host_guest_report,
-                                                     options=self.options)
-                    break
-                except ManagerThrottleError as e:
-                    self.logger.debug("429 encountered while performing "
-                                      "hypervisor check in.\nTrying again in "
-                                      "%s" % e.retry_after)
-                    self.interval_modifier = e.retry_after
-                self.wait(wait_time=self.interval_modifier)
-                self.interval_modifier = 0
-            # Poll for async results if async
-            while batch_host_guest_report.state not in [
-                AbstractVirtReport.STATE_CANCELED,
-                AbstractVirtReport.STATE_FAILED,
-                AbstractVirtReport.STATE_FINISHED]:
-                if self.interval_modifier != 0:
-                    wait_time = self.interval_modifier
+            # if we are printing, we do not want to send
+            if self.options.print_:
+                # Exit early and print somehow
+                self.reports_to_print.append(batch_host_guest_report)
+                # Consider all reports in this batch to be sent (because we
+                # are printing them, not sending them)
+                sources_sent.extend(reports_batched)
+
+            if not self.options.print_:
+                result = None
+                # Try to actually do the checkin whilst being mindful of the
+                # rate limit (retrying where necessary)
+                while result is None:
+                    try:
+                        result = self.dest.hypervisorCheckIn(
+                                batch_host_guest_report,
+                                options=self.options)
+                        break
+                    except ManagerThrottleError as e:
+                        self.logger.debug("429 encountered while performing "
+                                          "hypervisor check in.\n"
+                                          "Trying again in "
+                                          "%s" % e.retry_after)
+                        self.interval_modifier = e.retry_after
+                    self.wait(wait_time=self.interval_modifier)
                     self.interval_modifier = 0
-                else:
-                    wait_time = self.polling_interval
-                self.wait(wait_time=wait_time)
-                try:
-                    self.dest.check_report_state(batch_host_guest_report)
-                except ManagerThrottleError as e:
-                    self.logger.debug('429 encountered while checking job '
-                                      'state, checking again later')
-                    self.interval_modifier = e.retry_after
+                # Poll for async results if async (retrying where necessary)
+                while batch_host_guest_report.state not in [
+                    AbstractVirtReport.STATE_CANCELED,
+                    AbstractVirtReport.STATE_FAILED,
+                    AbstractVirtReport.STATE_FINISHED]:
+                    if self.interval_modifier != 0:
+                        wait_time = self.interval_modifier
+                        self.interval_modifier = 0
+                    else:
+                        wait_time = self.polling_interval
+                    self.wait(wait_time=wait_time)
+                    try:
+                        self.dest.check_report_state(batch_host_guest_report)
+                    except ManagerThrottleError as e:
+                        self.logger.debug('429 encountered while checking job '
+                                          'state, checking again later')
+                        self.interval_modifier = e.retry_after
 
-            # If the batch report did not reach the finished state, we do not
-            #  want to update which report we last sent (as we might want to
-            #  try to send the same report again next time)
-            if batch_host_guest_report.state == \
-                    AbstractVirtReport.STATE_FINISHED:
-                # Update the hash of the info last sent for each source
-                # included in the successful report
-                for source_key in reports_batched:
-                    self.last_report_for_source[source_key] = data_to_send[
-                        source_key].hash
-                    sources_sent.append(source_key)
-
+                # If the batch report did not reach the finished state
+                # we do not want to update which report we last sent (as we
+                # might want to try to send the same report again next time)
+                if batch_host_guest_report.state == \
+                        AbstractVirtReport.STATE_FINISHED:
+                    # Update the hash of the info last sent for each source
+                    # included in the successful report
+                    for source_key in reports_batched:
+                        self.last_report_for_source[source_key] = data_to_send[
+                            source_key].hash
+                        sources_sent.append(source_key)
         # Send each Domain Guest List Report if necessary
         for source_key in DomainListReports:
             report = data_to_send[source_key]
-            retry = True
-            while retry:  # Retry if we encounter a 429
-                try:
-                    self.dest.sendVirtGuests(report, options=self.options)
-                    sources_sent.append(source_key)
-                    self.last_report_for_source[source_key] = data_to_send[
-                        source_key].hash
-                    retry = False
-                except ManagerError:
-                    self.logger.debug("Error in manager, unable to send virt "
-                                      "guests for source: %s" % source_key)
-                    retry = False  # Only retry on 429
-                except ManagerThrottleError as e:
-                    self.logger.debug('429 encountered when sending virt '
-                                      'guests. Retrying after: %s' % e.retry_after)
-                    self.wait(wait_time=e.retry_after)
+            if not self.options.print_:
+                retry = True
+                while retry:  # Retry if we encounter a 429
+                    try:
+                        self.dest.sendVirtGuests(report, options=self.options)
+                        sources_sent.append(source_key)
+                        self.last_report_for_source[source_key] = data_to_send[
+                            source_key].hash
+                        retry = False
+                    except ManagerError:
+                        self.logger.debug("Error in manager, "
+                                          "unable to send virt "
+                                          "guests for source: %s" % source_key)
+                        retry = False  # Only retry on 429
+                    except ManagerThrottleError as e:
+                        self.logger.debug('429 encountered when sending virt '
+                                          'guests.'
+                                          'Retrying after: %s' % e.retry_after)
+                        self.wait(wait_time=e.retry_after)
+            elif self.options.print_:
+                self.reports_to_print.append(report)
+                sources_sent.append(source_key)
 
         # Terminate this thread if we have sent one report for each source
         if all(source_key in sources_sent for source_key in self.source_keys)\
                 and self._oneshot:
-            self.logger.debug('At least one report for each connected source '
-                              'has been sent. Terminating.')
+            if not self.options.print_:
+                self.logger.debug('At least one report for each connected '
+                                  'source has been sent. Terminating.')
+            else:
+                self.logger.debug('All info to print has been gathered. '
+                                  'Terminating.')
             self._internal_terminate_event.set()
         if self._oneshot:
             # Remove sources we have sent (or dealt with) so that we don't
@@ -655,7 +723,7 @@ class Virt(IntervalThread):
             sys.exit(0)
         self.logger.debug('Report for config "%s" gathered, placing in '
                           'datastore', data_to_send.config.name)
-        self.dest.put(data_to_send)
+        self.dest.put(self.config.name, data_to_send)
 
     def isHypervisor(self):
         """

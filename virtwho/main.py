@@ -39,20 +39,18 @@ from virtwho.parser import parseOptions, OptionError
 from virtwho.password import InvalidKeyFile
 from virtwho.virt import DomainListReport, HostGuestAssociationReport
 
-
 try:
     from systemd.daemon import notify as sd_notify
 except ImportError:
     def sd_notify(status, unset_environment=False):
         pass
 
-
 # Disable Insecure Request warning from requests library
 try:
-    requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
+    requests.packages.urllib3.disable_warnings(
+        requests.packages.urllib3.exceptions.InsecureRequestWarning)
 except AttributeError:
     pass
-
 
 PIDFILE = "/var/run/virt-who.pid"
 
@@ -70,7 +68,8 @@ class PIDLock(object):
                 return True
             except OSError:
                 # Process no longer exists
-                print >>sys.stderr, "PID file exists but associated process does not, deleting PID file"
+                print >> sys.stderr, "PID file exists but associated process " \
+                                     "does not, deleting PID file"
                 os.remove(self.filename)
                 return False
         except Exception:
@@ -79,10 +78,12 @@ class PIDLock(object):
     def __enter__(self):
         # Write pid to pidfile
         try:
-            with os.fdopen(os.open(self.filename, os.O_WRONLY | os.O_CREAT, 0600), 'w') as f:
+            with os.fdopen(
+                    os.open(self.filename, os.O_WRONLY | os.O_CREAT, 0600),
+                    'w') as f:
                 f.write("%d" % os.getpid())
         except Exception as e:
-            print >>sys.stderr, "Unable to create pid file: %s" % str(e)
+            print >> sys.stderr, "Unable to create pid file: %s" % str(e)
 
     def __exit__(self, exc_type, exc_value, traceback):
         try:
@@ -111,13 +112,14 @@ def main():
     try:
         logger, options = parseOptions()
     except OptionError as e:
-        print >>sys.stderr, str(e)
+        print >> sys.stderr, str(e)
         exit(1, status="virt-who can't be started: %s" % str(e))
 
     lock = PIDLock(PIDFILE)
     if lock.is_locked():
-        msg = "virt-who seems to be already running. If not, remove %s" % PIDFILE
-        print >>sys.stderr, msg
+        msg = "virt-who seems to be already running. If not, remove %s" % \
+              PIDFILE
+        print >> sys.stderr, msg
         exit(1, status=msg)
 
     global executor
@@ -128,7 +130,8 @@ def main():
         exit(1, "virt-who can't be started: %s" % str(e))
 
     if options.virtType is not None:
-        config = Config("env/cmdline", options.virtType, executor.configManager._defaults, **options)
+        config = Config("env/cmdline", options.virtType,
+                        executor.configManager._defaults, **options)
         try:
             config.checkOptions(logger)
         except InvalidOption as e:
@@ -145,7 +148,8 @@ def main():
             logger.error(err)
             exit(1, err)
         except Exception as e:
-            logger.error('Config file "%s" skipped because of an error: %s', conffile, str(e))
+            logger.error('Config file "%s" skipped because of an error: %s',
+                         conffile, str(e))
             has_error = True
 
     if len(executor.configManager.configs) == 0:
@@ -160,9 +164,12 @@ def main():
 
     for config in executor.configManager.configs:
         if config.name is None:
-            logger.info('Using commandline or sysconfig configuration ("%s" mode)', config.type)
+            logger.info(
+                'Using commandline or sysconfig configuration ("%s" mode)',
+                config.type)
         else:
-            logger.info('Using configuration "%s" ("%s" mode)', config.name, config.type)
+            logger.info('Using configuration "%s" ("%s" mode)', config.name,
+                        config.type)
 
     logger.info("Using reporter_id='%s'", options.reporter_id)
     log.closeLogger(logger)
@@ -175,7 +182,8 @@ def main():
         signal.signal(signal.SIGHUP, reload)
         signal.signal(signal.SIGTERM, atexit_fn)
 
-        executor.logger = logger = log.getLogger(name='main', config=None, queue=True)
+        executor.logger = logger = log.getLogger(name='main', config=None,
+                                                 queue=True)
 
         sd_notify("READY=1\nMAINPID=%d" % os.getpid())
         while True:
@@ -217,7 +225,8 @@ def _main(executor):
                 for hypervisor in report.association['hypervisors']:
                     h = OrderedDict((
                         ('uuid', hypervisor.hypervisorId),
-                        ('guests', [guest.toDict() for guest in hypervisor.guestIds])
+                        ('guests',
+                         [guest.toDict() for guest in hypervisor.guestIds])
                     ))
                     if hypervisor.facts:
                         h['facts'] = hypervisor.facts
@@ -251,6 +260,9 @@ def exit(code, status=None):
             for v in executor.virts:
                 v.stop()
                 v.join()
+            for d in executor.destinations:
+                d.stop()
+                d.join()
     if log.hasQueueLogger():
         queueLogger = log.getQueueLogger()
         queueLogger.terminate()

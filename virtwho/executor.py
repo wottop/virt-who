@@ -8,11 +8,12 @@ import sys
 from virtwho import log, MinimumSendInterval
 
 from virtwho.config import ConfigManager
+from virtwho.datastore import Datastore
 from virtwho.manager import (
     Manager, ManagerThrottleError, ManagerError, ManagerFatalError)
 from virtwho.virt import (
     AbstractVirtReport, ErrorReport, DomainListReport,
-    HostGuestAssociationReport, Virt)
+    HostGuestAssociationReport, Virt, DestinationThread)
 
 try:
     from collections import OrderedDict
@@ -38,35 +39,16 @@ class Executor(object):
         self.options = options
         self.terminate_event = Event()
         self.virts = []
+        self.destinations = []
 
         # Queue for getting events from virt backends
-        self.queue = None
-
-        # Dictionary with mapping between config names and report hashes,
-        # used for checking if the report changed from last time
-        self.last_reports_hash = {}
-        # How long should we wait between reports sent to server
-        self.retry_after = MinimumSendInterval
-        # This counts the number of responses of http code 429
-        # received between successfully sent reports
-        self._429_count = 0
+        self.datastore = Datastore()
         self.reloading = False
-
-        # Reports that are queued for sending
-        self.queued_reports = OrderedDict()
-
-        # Name of configs that wasn't reported in oneshot mode
-        self.oneshot_remaining = set()
-
-        # Reports that are currently processed by server
-        self.reports_in_progress = []
 
         self.configManager = ConfigManager(self.logger, config_dir)
 
         for config in self.configManager.configs:
             logger.debug("Using config named '%s'" % config.name)
-
-        self.send_after = time.time()
 
     def check_report_state(self, report):
         ''' Check state of one report that is being processed on server. '''
@@ -128,64 +110,27 @@ class Executor(object):
             except KeyError:
                 pass
 
-    def send(self, report):
-        """
-        Send list of uuids to subscription manager
-
-        return - True if sending is successful, False otherwise
-        """
-        try:
-            if isinstance(report, DomainListReport):
-                self._sendGuestList(report)
-            elif isinstance(report, HostGuestAssociationReport):
-                self._sendGuestAssociation(report)
-            else:
-                self.logger.warn("Unable to handle report of type: %s", type(report))
-        except ManagerError as e:
-            self.logger.error("Unable to send data: %s", str(e))
-            return False
-        except ManagerFatalError:
-            raise
-        except ManagerThrottleError:
-            raise
-        except socket.error as e:
-            if e.errno == errno.EINTR:
-                self.logger.debug("Communication with subscription manager interrupted")
-            return False
-        except Exception as e:
-            if self.reloading:
-                # We want to skip error reporting when reloading,
-                # it is caused by interrupted syscall
-                self.logger.debug("Communication with subscription manager interrupted")
-                return False
-            exceptionCheck(e)
-            self.logger.exception("Error in communication with subscription manager:")
-            return False
-        return True
-
-    def _sendGuestList(self, report):
-        manager = Manager.fromOptions(self.logger, self.options, report.config)
-        manager.sendVirtGuests(report, self.options)
-
-    def _sendGuestAssociation(self, report):
-        manager = Manager.fromOptions(self.logger, self.options, report.config)
-        manager.hypervisorCheckIn(report, self.options)
-
     def run(self):
         self.reloading = False
         if not self.options.oneshot:
             self.logger.debug("Starting infinite loop with %d seconds interval", self.options.interval)
 
         # Queue for getting events from virt backends
-        if self.queue is None:
-            self.queue = Queue()
+        if self.datastore is None:
+            self.datastore = Datastore()
 
-        # Run the virtualization backends
+        # Run the virtualization backends and destinations
         self.virts = []
+        self.destinations = []
+        # Need to update the dest to source mapping of the configManager object
+        # here because of the way that main reads the config from the command
+        # line
+        self.configManager.update_dest_to_source_map()
+
         for config in self.configManager.configs:
             try:
                 logger = log.getLogger(config=config)
-                virt = Virt.from_config(logger, config, self.queue,
+                virt = Virt.from_config(logger, config, self.datastore,
                                         terminate_event=self.terminate_event,
                                         interval=self.options.interval,
                                         oneshot=self.options.oneshot)
@@ -196,154 +141,100 @@ class Executor(object):
             virt.start()
             self.virts.append(virt)
 
-        # This set is used both for oneshot mode and to bypass rate-limit
-        # when virt-who is starting
-        self.oneshot_remaining = set(virt.config.name for virt in self.virts)
+        for info in self.configManager.dests:
+            source_keys = self.configManager.dest_to_sources_map[info]
+            info.name = "Destination_%s" % len(self.destinations)
+            logger = log.getLogger(name=info.name)
+            manager = Manager.fromInfo(logger, self.options, info)
+            info.name = "Destination_%s" % len(self.destinations)
+            dest = DestinationThread(config=info, logger=logger,
+                                     source_keys=source_keys,
+                                     options=self.options,
+                                     source=self.datastore, dest=manager,
+                                     terminate_event=self.terminate_event,
+                                     interval=self.options.interval,
+                                     oneshot=self.options.oneshot)
+            dest.start()
+            self.destinations.append(dest)
 
         if len(self.virts) == 0:
             err = "virt-who can't be started: no suitable virt backend found"
             self.logger.error(err)
+            self.stop_threads()
             sys.exit(err)
 
-        # queued reports depend on OrderedDict feature that if key exists
-        # when setting an item, it will remain in the same order
-        self.queued_reports.clear()
-
-        # Clear last reports, we need to resend them when reloaded
-        self.last_reports_hash.clear()
-
-        # List of reports that are being processed by server
-        self.reports_in_progress = []
-
-        # Send the first report immediately
-        self.send_after = time.time()
-
-        while not self.terminate_event.is_set():
-            if self.reports_in_progress:
-                # Check sent report status regularly
-                timeout = 1
-            elif time.time() > self.send_after:
-                if self.queued_reports:
-                    # Reports are queued and we can send them right now,
-                    # don't wait in queue
-                    timeout = 0
-                else:
-                    # No reports in progress or queued and we can send report
-                    # immediately, we can wait for report as long as we want
-                    timeout = 3600
-            else:
-                # We can't send report right now, wait till we can
-                timeout = max(1, self.send_after - time.time())
-
-            # Wait for incoming report from virt backend or for timeout
+        if len(self.destinations) <= 0:
+            # Try to use the default destination (the one that the local system
+            # is currently registered to.)
+            self.logger.warning("No destinations found, using default")
             try:
-                report = self.queue.get(block=True, timeout=timeout)
-            except Empty:
-                report = None
-            except IOError:
-                continue
+                source_keys = list(self.configManager.sources)
+                logger = log.getLogger(name="Default_Destination")
+                manager = Manager.fromOptions(logger, self.options)
+                dest = DestinationThread(config=self.options, logger=logger,
+                                         source_keys=source_keys,
+                                         options=self.options,
+                                         source=self.datastore, dest=manager,
+                                         terminate_event=self.terminate_event,
+                                         interval=self.options.interval,
+                                         oneshot=self.options.oneshot)
+                dest.start()
+                self.destinations.append(dest)
+            except:
+                err = "virt-who can't be started: no suitable destination found"
+                self.logger.exception(err)
+                self.stop_threads()
+                sys.exit(err)
 
-            # Read rest of the reports from the queue in order to remove
-            # obsoleted reports from same virt
-            while True:
-                if isinstance(report, ErrorReport):
-                    if self.options.oneshot:
-                        # Don't hang on the failed backend
-                        try:
-                            self.oneshot_remaining.remove(report.config.name)
-                        except KeyError:
-                            pass
-                        self.logger.warn('Unable to collect report for config "%s"', report.config.name)
-                elif isinstance(report, AbstractVirtReport):
-                    if self.last_reports_hash.get(report.config.name, None) == report.hash:
-                        self.logger.info('Report for config "%s" hasn\'t changed, not sending', report.config.name)
-                    else:
-                        if report.config.name in self.oneshot_remaining:
-                            # Send the report immediately
-                            self.oneshot_remaining.remove(report.config.name)
-                            if not self.options.print_:
-                                self.send_report(report.config.name, report)
-                            else:
-                                self.queued_reports[report.config.name] = report
-                        else:
-                            self.queued_reports[report.config.name] = report
-                elif report in ['exit', 'reload']:
-                    # Reload and exit reports takes priority, do not process
-                    # any other reports
-                    break
+        # Interruptibly wait on the other threads to be terminated
+        while not self.terminated():
+            time.sleep(1)
 
-                # Get next report from queue
-                try:
-                    report = self.queue.get(block=False)
-                except Empty:
-                    break
+        self.stop_threads()
 
-            if report == 'exit':
-                break
-            elif report == 'reload':
-                self.stop_virts()
-                raise ReloadRequest()
-
-            self.check_reports_state()
-
-            if not self.reports_in_progress and self.queued_reports and time.time() > self.send_after:
-                # No report is processed, send next one
-                if not self.options.print_:
-                    self.send_current_report()
-
-            if self.options.oneshot and not self.oneshot_remaining and not self.reports_in_progress:
-                break
-
-        self.queue = None
-        self.stop_virts()
-
-        self.virt = []
+        # TODO: Completely rewrite how the --print option is handled
         if self.options.print_:
-            return self.queued_reports
+            return self.to_print
 
-    def stop_virts(self):
-        for virt in self.virts:
-            virt.stop()
-            virt.join()
+    def terminated(self):
+        """
+        @return: Returns whether or not we have terminated
+        @rtype: bool
+        """
+        result = True
+        if self.destinations and self.virts:
+            result = all([thread.is_terminated() for thread in
+                         self.destinations]) and all([thread.is_terminated() for
+                                                     thread in self.virts])
+        return result
+
+    def stop_threads(self):
+        print "STOPPING THREADS"
+        if self.terminate_event.is_set():
+            return
+        self.terminate_event.set()
+        for thread in self.virts:
+            thread.stop()
+            thread.join()
         self.virts = []
+        # Handle using the --print option
+        self.to_print = []
+        for thread in self.destinations:
+            thread.stop()
+            thread.join()
+            self.to_print.extend(thread.reports_to_print)
+        self.destinations = []
+        print "THREADS SHOULD BE STOPPED"
 
     def terminate(self):
         self.logger.debug("virt-who is shutting down")
-
-        # Terminate the backends before clearing the queue, the queue must be empty
-        # to end a child process, otherwise it will be stuck in queue.put()
-        self.terminate_event.set()
-        # Give backends some time to terminate properly
-        time.sleep(0.5)
-
-        if self.queue:
-            # clear the queue and put "exit" there
-            try:
-                while True:
-                    self.queue.get(False)
-            except Empty:
-                pass
-            self.queue.put("exit")
-
-        # Give backends some more time to terminate properly
-        time.sleep(0.5)
-
-        self.stop_virts()
+        self.stop_threads()
 
     def reload(self):
         self.logger.warn("virt-who reload")
         # Set the terminate event in all the virts
-        for virt in self.virts:
-            virt.stop()
-        # clear the queue and put "reload" there
-        try:
-            while True:
-                self.queue.get(False)
-        except Empty:
-            pass
+        self.stop_threads()
         self.reloading = True
-        self.queue.put("reload")
-
 
 def exceptionCheck(e):
     try:

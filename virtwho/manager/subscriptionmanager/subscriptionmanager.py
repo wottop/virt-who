@@ -52,10 +52,11 @@ class SubscriptionManager(Manager):
     smType = "sam"
 
     """ Class for interacting subscription-manager. """
-    def __init__(self, logger, options):
+    def __init__(self, logger, options, connection_info):
         self.logger = logger
         self.options = options
         self.cert_uuid = None
+        self.connection_info = connection_info
 
         self.rhsm_config = rhsm_config.initConfig(rhsm_config.DEFAULT_CONFIG_PATH)
         self.readConfig()

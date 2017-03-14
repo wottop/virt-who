@@ -37,6 +37,13 @@ class ManagerThrottleError(Exception):
 
 
 class Manager(object):
+    """
+    This class is an abstract representation of an object that, given info
+    to be used to connect, can transform reports from virt-who internal format
+    to the format necessary for the endpoint. In addition these classes must be
+    able to establish and maintain a connection to the given "destination"
+    backend.
+    """
     def __repr__(self):
         return '{0.__class__.__name__}({0.logger!r}, {0.options!r})'.format(self)
 
@@ -62,7 +69,8 @@ class Manager(object):
         # Silence pyflakes errors
         assert virtwho
 
-        smType = config.smType or options.smType or 'sam'
+        config_smType = config.smType if config else None
+        smType = config_smType or options.smType or 'sam'
 
         for subcls in cls.__subclasses__():
             if subcls.smType == smType:
@@ -96,4 +104,5 @@ class Manager(object):
             Satellite6DestinationInfo: SubscriptionManager
         }
 
-        return info_to_manager_map[type(info)](logger, options)
+        return info_to_manager_map[type(info)](logger, options,
+                                               connection_info=info)

@@ -162,15 +162,23 @@ class Info(object):
             return NotImplemented
         return not result
 
+    def __iter__(self):
+        for key, value in self.__dict__["_options"].iteritems():
+            yield (key, value)
+
+    def keys(self):
+        return self.__dict__['_options'].keys()
+
 # Should this be defined in the manager that actually requires these values?
 class Satellite5DestinationInfo(Info):
     required_kwargs = (
         'sat_server',
         'sat_username',
-        'sat_password',
+        'sat_password'
     )
     optional_kwargs = ("filter_hosts",
-                       "exclude_hosts")
+                       "exclude_hosts",
+                       "interval")
 
 
 # Should this be defined in the manager that actually requires these values?
@@ -190,7 +198,8 @@ class Satellite6DestinationInfo(Info):
                        "rhsm_proxy_password",
                        "rhsm_insecure",
                        "filter_hosts",
-                       "exclude_hosts")
+                       "exclude_hosts",
+                       "interval")
 
 
 class GeneralConfig(object):
@@ -520,6 +529,9 @@ class ConfigManager(object):
                 self.logger.error("Configuration file %s contains no section headers", conf)
 
         self._readConfig(parser)
+        self.update_dest_to_source_map()
+
+    def update_dest_to_source_map(self):
         sources, dests, d_to_s = ConfigManager.map_destinations_to_sources(
                 self._configs)
         self.sources = sources
@@ -579,13 +591,15 @@ class ConfigManager(object):
                     dest = dest_class(**config._options)
                 except ValueError as e:
                     # If we can't make this dest from the config, ignore
-                    print e
+                    pass  # print e
                 if dest:
                     dests.add(dest)
                     current_sources = dest_to_source_map.get(dest, set())
                     current_sources.symmetric_difference_update(
                             set([config.name]))
                     dest_to_source_map[dest] = current_sources
+        for dest, source_set in dest_to_source_map.iteritems():
+            dest_to_source_map[dest] = list(source_set)
         return sources, dests, dest_to_source_map
 
     @property

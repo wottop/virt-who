@@ -532,7 +532,8 @@ class ConfigManager(object):
         self.update_dest_to_source_map()
 
     def update_dest_to_source_map(self):
-        sources, dests, d_to_s = ConfigManager.map_destinations_to_sources(
+        sources, dests, d_to_s, orphan_sources = \
+            ConfigManager.map_destinations_to_sources(
                 self._configs)
         self.sources = sources
         self.dests = dests
@@ -571,6 +572,7 @@ class ConfigManager(object):
         """
         # Will include the names of the configs
         sources = set()
+        sources_without_destinations = set()
         # Will include all dest info objects from all configs
         dests = set()
         dest_classes = dest_classes or (Satellite5DestinationInfo,
@@ -584,6 +586,7 @@ class ConfigManager(object):
         # sources
         for config in configs:
             sources.add(config.name)
+            sources_without_destinations.add(config.name)
             for dest_class in dest_classes:
                 dest = None
                 try:
@@ -597,10 +600,12 @@ class ConfigManager(object):
                     current_sources = dest_to_source_map.get(dest, set())
                     current_sources.symmetric_difference_update(
                             set([config.name]))
+                    sources_without_destinations.difference_update(set([
+                        config.name]))
                     dest_to_source_map[dest] = current_sources
         for dest, source_set in dest_to_source_map.iteritems():
             dest_to_source_map[dest] = list(source_set)
-        return sources, dests, dest_to_source_map
+        return sources, dests, dest_to_source_map, sources_without_destinations
 
     @property
     def configs(self):

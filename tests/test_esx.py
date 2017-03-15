@@ -26,6 +26,7 @@ from Queue import Queue
 
 from base import TestBase
 from virtwho.config import Config
+from virtwho.datastore import Datastore
 from virtwho.virt.esx import Esx
 from virtwho.virt import VirtError, Guest, Hypervisor, HostGuestAssociationReport
 from proxy import Proxy
@@ -37,12 +38,13 @@ class TestEsx(TestBase):
                         password='password', owner='owner', env='env')
         self.esx = Esx(self.logger, config, None)  #  No dest given here
 
-    def run_once(self, queue=None):
+    def run_once(self, datastore=None):
         ''' Run ESX in oneshot mode '''
         self.esx._oneshot = True
-        if queue is None:
-            queue = Mock(spec=Queue())
-        self.esx.dest = queue
+        if datastore is None:
+            datastore = Mock(spec=Datastore())
+
+        self.esx.dest = datastore
         self.esx._terminate_event = Event()
         self.esx._oneshot = True
         self.esx._interval = 0

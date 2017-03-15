@@ -104,5 +104,4 @@ class Manager(object):
             Satellite6DestinationInfo: SubscriptionManager
         }
 
-        return info_to_manager_map[type(info)](logger, options,
-                                               connection_info=info)
+        return info_to_manager_map[type(info)](logger, options)

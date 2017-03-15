@@ -162,6 +162,13 @@ def main():
         logger.info("No configurations found, using libvirt as backend")
         executor.configManager.addConfig(Config("env/cmdline", "libvirt"))
 
+    if len(executor.configManager.dests) == 0:
+        if has_error:
+            err = "virt-who can't be started: no valid destination found"
+            logger.error(err)
+            exit(1, err)
+
+
     for config in executor.configManager.configs:
         if config.name is None:
             logger.info(

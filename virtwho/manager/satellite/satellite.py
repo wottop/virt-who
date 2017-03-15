@@ -51,12 +51,11 @@ class Satellite(Manager):
     """ Class for interacting with satellite (RHN Classic). """
     HYPERVISOR_SYSTEMID_FILE = "/var/lib/virt-who/hypervisor-systemid-%s"
 
-    def __init__(self, logger, options, connection_info):
+    def __init__(self, logger, options):
         self.logger = logger
         self.server_xmlrpc = None
         self.server_rpcapi = None
         self.options = options
-        self.connection_info = connection_info
 
     def _connect(self, config):
         server = config.sat_server or self.options.sat_server

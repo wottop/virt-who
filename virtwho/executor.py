@@ -50,66 +50,6 @@ class Executor(object):
         for config in self.configManager.configs:
             logger.debug("Using config named '%s'" % config.name)
 
-    def check_report_state(self, report):
-        ''' Check state of one report that is being processed on server. '''
-        manager = Manager.fromOptions(self.logger, self.options, report.config)
-        manager.check_report_state(report)
-
-    def check_reports_state(self):
-        ''' Check status of the reports that are being processed on server. '''
-        if not self.reports_in_progress:
-            return
-        updated = []
-        for report in self.reports_in_progress:
-            self.check_report_state(report)
-            if report.state == AbstractVirtReport.STATE_CREATED:
-                self.logger.warning("Can't check status of report that is not yet sent")
-            elif report.state == AbstractVirtReport.STATE_PROCESSING:
-                updated.append(report)
-            else:
-                self.report_done(report)
-        self.reports_in_progress = updated
-
-    def send_current_report(self):
-        name, report = self.queued_reports.popitem(last=False)
-        return self.send_report(name, report)
-
-    def send_report(self, name, report):
-        try:
-            if self.send(report):
-                # Success will reset the 429 count
-                if self._429_count > 0:
-                    self._429_count = 1
-                    self.retry_after = MinimumSendInterval
-
-                self.logger.debug('Report for config "%s" sent', name)
-                if report.state == AbstractVirtReport.STATE_PROCESSING:
-                    self.reports_in_progress.append(report)
-                else:
-                    self.report_done(report)
-            else:
-                report.state = AbstractVirtReport.STATE_FAILED
-                self.logger.debug('Report from "%s" failed to sent', name)
-                self.report_done(report)
-        except ManagerThrottleError as e:
-            self.queued_reports[name] = report
-            self._429_count += 1
-            self.retry_after = max(MinimumSendInterval, e.retry_after * self._429_count)
-            self.send_after = time.time() + self.retry_after
-            self.logger.debug('429 received, waiting %s seconds until sending again', self.retry_after)
-
-    def report_done(self, report):
-        name = report.config.name
-        self.send_after = time.time() + self.options.interval
-        if report.state == AbstractVirtReport.STATE_FINISHED:
-            self.last_reports_hash[name] = report.hash
-
-        if self.options.oneshot:
-            try:
-                self.oneshot_remaining.remove(name)
-            except KeyError:
-                pass
-
     def run(self):
         self.reloading = False
         if not self.options.oneshot:
@@ -143,10 +83,9 @@ class Executor(object):
 
         for info in self.configManager.dests:
             source_keys = self.configManager.dest_to_sources_map[info]
-            info.name = "Destination_%s" % len(self.destinations)
+            info.name = "Destination_%s" % hash(info)
             logger = log.getLogger(name=info.name)
             manager = Manager.fromInfo(logger, self.options, info)
-            info.name = "Destination_%s" % len(self.destinations)
             dest = DestinationThread(config=info, logger=logger,
                                      source_keys=source_keys,
                                      options=self.options,
@@ -163,14 +102,19 @@ class Executor(object):
             self.stop_threads()
             sys.exit(err)
 
+        # Need to find sources that have no destination to go to
+
         if len(self.destinations) <= 0:
             # Try to use the default destination (the one that the local system
             # is currently registered to.)
             self.logger.warning("No destinations found, using default")
             try:
+                # Find sources that have no destination to go to
                 source_keys = list(self.configManager.sources)
                 logger = log.getLogger(name="Default_Destination")
                 manager = Manager.fromOptions(logger, self.options)
+                # Set the name of the given options to
+                self.options.name = "Destination_Default"
                 dest = DestinationThread(config=self.options, logger=logger,
                                          source_keys=source_keys,
                                          options=self.options,
@@ -203,9 +147,11 @@ class Executor(object):
         """
         result = True
         if self.destinations and self.virts:
-            result = all([thread.is_terminated() for thread in
-                         self.destinations]) and all([thread.is_terminated() for
-                                                     thread in self.virts])
+            all_dests_terminated = all([thread.is_terminated() for thread in
+                         self.destinations])
+            all_virts_terminated = all([thread.is_terminated() for thread in
+                                self.virts])
+            result = all_dests_terminated and all_virts_terminated
         return result
 
     def stop_threads(self):
@@ -235,11 +181,3 @@ class Executor(object):
         # Set the terminate event in all the virts
         self.stop_threads()
         self.reloading = True
-
-def exceptionCheck(e):
-    try:
-        # This happens when connection to server is interrupted (CTRL+C or signal)
-        if e.args[0] == errno.EALREADY:
-            exit(0)
-    except Exception:
-        pass

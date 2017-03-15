@@ -334,6 +334,7 @@ class IntervalThread(Thread):
             data_to_send = self._get_data()
             self._send_data(data_to_send)
             if self._oneshot:
+                self._internal_terminate_event.set()
                 break
             end_time = datetime.now()
 
@@ -392,11 +393,13 @@ class IntervalThread(Thread):
                         self._send_data(ErrorReport(self.config))
                     self.logger.debug("Thread '%s' stopped after sending one "
                                       "report", self.config.name)
+                    self._internal_terminate_event.set()
                     return
 
                 if self.is_terminated():
                     self.logger.debug("Thread '%s' terminated",
                                       self.config.name)
+                    self._internal_terminate_event.set()
                     return
 
                 self.logger.info("Waiting %s seconds before performing action"
@@ -444,7 +447,6 @@ class DestinationThread(IntervalThread):
         @type dest: Manager
         """
         if not isinstance(source_keys, list):
-            print source_keys
             raise ValueError("Source keys must be a list")
         self.source_keys = source_keys
         self.last_report_for_source = {}  # Source_key to hash of last report
@@ -464,7 +466,7 @@ class DestinationThread(IntervalThread):
             polling_interval = self.config.polling_interval
         except AttributeError:
             polling_interval = self.interval
-        self.polling_interval = polling_interval
+        self.polling_interval = polling_interval or self.interval
         # This is used when there is some reason to modify how long we wait
         # EX when we get a 429 back from the server, this value will be the
         # value of the retry_after header.
@@ -478,13 +480,21 @@ class DestinationThread(IntervalThread):
         reports = {}
         for source_key in self.source_keys:
             report = self.source.get(source_key, NotSetSentinel)
+            print report
+
             if self.options.print_ or self._oneshot:
                 # If we are printing we want to make sure we get one report
-                # per source
+                # per source, we also do not want to get stuck waiting for a
+                # report which might not come
                 self.logger.debug("GETTING DATA FOR SOURCE: %s" % source_key)
-                while report is NotSetSentinel:
-                    self.wait(1)  # wait for 1 second before trying again
+                time_waited = 0
+                while report is NotSetSentinel and time_waited < \
+                        self.polling_interval:
+                    time_to_wait = 1
+                    self.wait(time_to_wait)  # wait before trying again
+                    time_waited += time_to_wait
                     report = self.source.get(source_key, NotSetSentinel)
+
             self.logger.debug("REPORT: %s" % report)
             if report is None or report is NotSetSentinel:
                 self.logger.debug("REPORT APPEARS TO BE NONE OR NOTSET "
@@ -492,6 +502,7 @@ class DestinationThread(IntervalThread):
                 continue
             if report.hash == self.last_report_for_source.get(source_key, None):
                 self.logger.debug('Duplicate report found, ignoring')
+                print report
                 continue
             reports[source_key] = report
         return reports

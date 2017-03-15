@@ -26,6 +26,7 @@ import rhsm.connection as rhsm_connection
 import rhsm.certificate as rhsm_certificate
 import rhsm.config as rhsm_config
 
+from virtwho.config import NotSetSentinel
 from virtwho.manager import Manager, ManagerError, ManagerFatalError, ManagerThrottleError
 from virtwho.virt import AbstractVirtReport
 
@@ -52,11 +53,10 @@ class SubscriptionManager(Manager):
     smType = "sam"
 
     """ Class for interacting subscription-manager. """
-    def __init__(self, logger, options, connection_info):
+    def __init__(self, logger, options):
         self.logger = logger
         self.options = options
         self.cert_uuid = None
-        self.connection_info = connection_info
 
         self.rhsm_config = rhsm_config.initConfig(rhsm_config.DEFAULT_CONFIG_PATH)
         self.readConfig()
@@ -84,6 +84,17 @@ class SubscriptionManager(Manager):
             'insecure': self.rhsm_config.get('server', 'insecure')
         }
 
+        kwargs_to_config = {
+            'host': 'rhsm_hostname',
+            'ssl_port': 'rhsm_port',
+            'handler': 'rhsm_prefix',
+            'proxy_hostname': 'rhsm_proxy_hostname',
+            'proxy_port': 'rhsm_proxy_port',
+            'proxy_user': 'rhsm_proxy_user',
+            'proxy_password': 'rhsm_proxy_password',
+            'insecure': 'rhsm_insecure'
+        }
+
         rhsm_username = None
         rhsm_password = None
 
@@ -92,30 +103,40 @@ class SubscriptionManager(Manager):
             rhsm_password = config.rhsm_password
 
             # Testing for None is necessary, it might be an empty string
+            for key, value in kwargs.iteritems():
+                try:
+                    from_config = config[kwargs_to_config[key]]
+                    if from_config is not NotSetSentinel and from_config is \
+                            not None:
+                        if key is 'ssl_port':
+                            from_config = int(from_config)
+                        kwargs[key] = from_config
+                except KeyError:
+                    continue
 
-            if config.rhsm_hostname is not None:
-                kwargs['host'] = config.rhsm_hostname
-
-            if config.rhsm_port is not None:
-                kwargs['ssl_port'] = int(config.rhsm_port)
-
-            if config.rhsm_prefix is not None:
-                kwargs['handler'] = config.rhsm_prefix
-
-            if config.rhsm_proxy_hostname is not None:
-                kwargs['proxy_hostname'] = config.rhsm_proxy_hostname
-
-            if config.rhsm_proxy_port is not None:
-                kwargs['proxy_port'] = config.rhsm_proxy_port
-
-            if config.rhsm_proxy_user is not None:
-                kwargs['proxy_user'] = config.rhsm_proxy_user
-
-            if config.rhsm_proxy_password is not None:
-                kwargs['proxy_password'] = config.rhsm_proxy_password
-
-            if config.rhsm_insecure is not None:
-                kwargs['insecure'] = config.rhsm_insecure
+            # if config.rhsm_hostname is not None:
+            #     kwargs['host'] = config.rhsm_hostname
+            #
+            # if config.rhsm_port is not None:
+            #     kwargs['ssl_port'] = int(config.rhsm_port)
+            #
+            # if config.rhsm_prefix is not None:
+            #     kwargs['handler'] = config.rhsm_prefix
+            #
+            # if config.rhsm_proxy_hostname is not None:
+            #     kwargs['proxy_hostname'] = config.rhsm_proxy_hostname
+            #
+            # if config.rhsm_proxy_port is not None:
+            #     kwargs['proxy_port'] = config.rhsm_proxy_port
+            #
+            # if config.rhsm_proxy_user is not None:
+            #     kwargs['proxy_user'] = config.rhsm_proxy_user
+            #
+            # if config.rhsm_proxy_password is not None:
+            #     kwargs['proxy_password'] = config.rhsm_proxy_password
+            #
+            # if config.rhsm_insecure is not None:
+            #     kwargs['insecure'] = config.rhsm_insecure
 
         if rhsm_username and rhsm_password:
             self.logger.debug("Authenticating with RHSM username %s", rhsm_username)

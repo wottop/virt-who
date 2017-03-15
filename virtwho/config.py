@@ -174,11 +174,11 @@ class Satellite5DestinationInfo(Info):
     required_kwargs = (
         'sat_server',
         'sat_username',
-        'sat_password'
+        'sat_password',
     )
     optional_kwargs = ("filter_hosts",
                        "exclude_hosts",
-                       "interval")
+                       )
 
 
 # Should this be defined in the manager that actually requires these values?
@@ -187,7 +187,7 @@ class Satellite6DestinationInfo(Info):
         "env",
         "owner",
         "rhsm_username",
-        "rhsm_password"
+        "rhsm_password",
     )
     optional_kwargs = ("rhsm_hostname",
                        "rhsm_port",
@@ -197,9 +197,9 @@ class Satellite6DestinationInfo(Info):
                        "rhsm_proxy_user",
                        "rhsm_proxy_password",
                        "rhsm_insecure",
-                       "filter_hosts",
-                       "exclude_hosts",
-                       "interval")
+                       #"filter_hosts",
+                       #"exclude_hosts",
+                       )
 
 
 class GeneralConfig(object):
@@ -604,7 +604,7 @@ class ConfigManager(object):
                         config.name]))
                     dest_to_source_map[dest] = current_sources
         for dest, source_set in dest_to_source_map.iteritems():
-            dest_to_source_map[dest] = list(source_set)
+            dest_to_source_map[dest] = sorted(list(source_set))
         return sources, dests, dest_to_source_map, sources_without_destinations
 
     @property

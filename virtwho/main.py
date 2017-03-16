@@ -162,12 +162,13 @@ def main():
         logger.info("No configurations found, using libvirt as backend")
         executor.configManager.addConfig(Config("env/cmdline", "libvirt"))
 
+    executor.configManager.update_dest_to_source_map()
+
     if len(executor.configManager.dests) == 0:
         if has_error:
             err = "virt-who can't be started: no valid destination found"
             logger.error(err)
             exit(1, err)
-
 
     for config in executor.configManager.configs:
         if config.name is None:
@@ -203,10 +204,51 @@ def main():
 
 def _main(executor):
     result = None
+    if executor.options.oneshot:
+        try:
+            result = executor.run_oneshot()
+        except ManagerFatalError:
+            executor.stop_threads()
+            executor.logger.exception("Fatal error:")
+
+        if executor.options.print_:
+            if not result:
+                executor.logger.error("No hypervisor reports found")
+                return 1
+            hypervisors = []
+            for config, report in result.items():
+                if isinstance(report, DomainListReport):
+                    hypervisors.append({
+                        'guests': [guest.toDict() for guest in report.guests]
+                    })
+                elif isinstance(report, HostGuestAssociationReport):
+                    for hypervisor in report.association['hypervisors']:
+                        h = OrderedDict((
+                            ('uuid', hypervisor.hypervisorId),
+                            ('guests',
+                             [guest.toDict() for guest in hypervisor.guestIds])
+                        ))
+                        if hypervisor.facts:
+                            h['facts'] = hypervisor.facts
+                        if hypervisor.name:
+                            h['name'] = hypervisor.name
+                        hypervisors.append(h)
+            data = json.dumps({
+                'hypervisors': hypervisors
+            })
+            executor.logger.debug("Associations found: %s", json.dumps({
+                'hypervisors': hypervisors
+            }, indent=4, sort_keys=True))
+            print(data)
+        return 0
+
+    # We'll get here only if we're not in oneshot or print_ mode (which
+    # implies oneshot)
+
     try:
-        result = executor.run()
+        executor.run()
     except ManagerFatalError:
-        executor.stop_virts()
+        executor.stop_threads()
         executor.logger.exception("Fatal error:")
         if not executor.options.oneshot:
             executor.logger.info("Waiting for reload signal")
@@ -217,36 +259,6 @@ def _main(executor):
                     raise ReloadRequest()
                 elif report == 'exit':
                     return 0
-
-    if executor.options.print_:
-        if not result:
-            executor.logger.error("No hypervisor reports found")
-            return 1
-        hypervisors = []
-        for config, report in result.items():
-            if isinstance(report, DomainListReport):
-                hypervisors.append({
-                    'guests': [guest.toDict() for guest in report.guests]
-                })
-            elif isinstance(report, HostGuestAssociationReport):
-                for hypervisor in report.association['hypervisors']:
-                    h = OrderedDict((
-                        ('uuid', hypervisor.hypervisorId),
-                        ('guests',
-                         [guest.toDict() for guest in hypervisor.guestIds])
-                    ))
-                    if hypervisor.facts:
-                        h['facts'] = hypervisor.facts
-                    if hypervisor.name:
-                        h['name'] = hypervisor.name
-                    hypervisors.append(h)
-        data = json.dumps({
-            'hypervisors': hypervisors
-        })
-        executor.logger.debug("Associations found: %s", json.dumps({
-            'hypervisors': hypervisors
-        }, indent=4, sort_keys=True))
-        print(data)
     return 0
 
 

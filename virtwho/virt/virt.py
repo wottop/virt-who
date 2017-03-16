@@ -388,16 +388,16 @@ class IntervalThread(Thread):
                                               "exception:", self.config.name)
                         has_error = True
 
-                if self._oneshot:
-                    if has_error:
-                        self._send_data(ErrorReport(self.config))
-                    self.logger.debug("Thread '%s' stopped after sending one "
-                                      "report", self.config.name)
+                if self.is_terminated():
+                    self.logger.debug("Thread '%s' terminated",
+                                      self.config.name)
                     self._internal_terminate_event.set()
                     return
 
-                if self.is_terminated():
-                    self.logger.debug("Thread '%s' terminated",
+                if self._oneshot:
+                    if has_error:
+                        self._send_data(ErrorReport(self.config))
+                    self.logger.debug("Thread '%s' stopped after running once",
                                       self.config.name)
                     self._internal_terminate_event.set()
                     return
@@ -479,30 +479,16 @@ class DestinationThread(IntervalThread):
         """
         reports = {}
         for source_key in self.source_keys:
+            #self.logger.debug("GETTING DATA FOR SOURCE: %s" % source_key)
             report = self.source.get(source_key, NotSetSentinel)
-            print report
 
-            if self.options.print_ or self._oneshot:
-                # If we are printing we want to make sure we get one report
-                # per source, we also do not want to get stuck waiting for a
-                # report which might not come
-                self.logger.debug("GETTING DATA FOR SOURCE: %s" % source_key)
-                time_waited = 0
-                while report is NotSetSentinel and time_waited < \
-                        self.polling_interval:
-                    time_to_wait = 1
-                    self.wait(time_to_wait)  # wait before trying again
-                    time_waited += time_to_wait
-                    report = self.source.get(source_key, NotSetSentinel)
-
-            self.logger.debug("REPORT: %s" % report)
+            #self.logger.debug("REPORT: %s" % report)
             if report is None or report is NotSetSentinel:
-                self.logger.debug("REPORT APPEARS TO BE NONE OR NOTSET "
-                                  "SKIPPING")
+                self.logger.debug("No report available for source: %s" %
+                                  source_key)
                 continue
             if report.hash == self.last_report_for_source.get(source_key, None):
                 self.logger.debug('Duplicate report found, ignoring')
-                print report
                 continue
             reports[source_key] = report
         return reports
@@ -520,7 +506,7 @@ class DestinationThread(IntervalThread):
             self.logger.info('Error report received, shutting down')
             self._internal_terminate_event.set()
             return
-        self.logger.debug("IT APPEARS WE HAVE DATA TO SEND")
+        #self.logger.debug("IT APPEARS WE HAVE DATA TO SEND")
         all_hypervisors = [] # All the Host-guest mappings together
         DomainListReports = []  # Source_keys of DomainListReports
         reports_batched = []  # Source_keys of reports to be sent as one
@@ -530,17 +516,18 @@ class DestinationThread(IntervalThread):
         for source_key, report in data_to_send.iteritems():
             if isinstance(report, DomainListReport):
                 # These are sent one at a time to the destination
-                self.logger.debug("FOUND DOMAINGUESTLIST REPORT FOR SOURCE: "
-                                  "%s" % source_key)
+                # self.logger.debug("FOUND DOMAINGUESTLIST REPORT FOR SOURCE: "
+                #                   "%s" % source_key)
                 DomainListReports.append(source_key)
                 continue
             if isinstance(report, HostGuestAssociationReport):
                 # These reports are put into one report to send at once
-                self.logger.debug("FOUND HYPERVISORGUESTASSOCIATIONREPORT FOR SOURCE: %s" % source_key)
-                self.logger.debug("REPORT ASSOCIATION: %s" %
-                                  report.association['hypervisors'])
-                self.logger.debug("REPORT _ASSOC: %s" %
-                                  report._assoc)
+                #self.logger.debug("FOUND HYPERVISORGUESTASSOCIATIONREPORT
+                # FOR SOURCE: %s" % source_key)
+                # self.logger.debug("REPORT ASSOCIATION: %s" %
+                #                   report.association['hypervisors'])
+                # self.logger.debug("REPORT _ASSOC: %s" %
+                #                   report._assoc)
                 all_hypervisors.extend(report.association['hypervisors'])
                 # Keep track of those reports that we have
                 reports_batched.append(source_key)
@@ -559,7 +546,7 @@ class DestinationThread(IntervalThread):
         if all_hypervisors:
             # Modify the batched dict to be in the form expected for
             # HostGuestAssociationReports
-            self.logger.debug("ALL HYPERVISORS: %s" % all_hypervisors)
+            #self.logger.debug("ALL HYPERVISORS: %s" % all_hypervisors)
             all_hypervisors = {'hypervisors': all_hypervisors}
             batch_host_guest_report = HostGuestAssociationReport(self.config,
                                                                  all_hypervisors)

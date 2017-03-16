@@ -550,61 +550,55 @@ class DestinationThread(IntervalThread):
             all_hypervisors = {'hypervisors': all_hypervisors}
             batch_host_guest_report = HostGuestAssociationReport(self.config,
                                                                  all_hypervisors)
-            # if we are printing, we do not want to send
-            if self.options.print_:
-                # Exit early and print somehow
-                self.reports_to_print.append(batch_host_guest_report)
-                # Consider all reports in this batch to be sent (because we
-                # are printing them, not sending them)
-                sources_sent.extend(reports_batched)
-
-            if not self.options.print_:
-                result = None
-                # Try to actually do the checkin whilst being mindful of the
-                # rate limit (retrying where necessary)
-                while result is None:
-                    try:
-                        result = self.dest.hypervisorCheckIn(
-                                batch_host_guest_report,
-                                options=self.options)
-                        break
-                    except ManagerThrottleError as e:
-                        self.logger.debug("429 encountered while performing "
-                                          "hypervisor check in.\n"
-                                          "Trying again in "
-                                          "%s" % e.retry_after)
-                        self.interval_modifier = e.retry_after
-                    self.wait(wait_time=self.interval_modifier)
+            result = None
+            # Try to actually do the checkin whilst being mindful of the
+            # rate limit (retrying where necessary)
+            while result is None:
+                try:
+                    result = self.dest.hypervisorCheckIn(
+                            batch_host_guest_report,
+                            options=self.options)
+                    break
+                except ManagerThrottleError as e:
+                    self.logger.debug("429 encountered while performing "
+                                      "hypervisor check in.\n"
+                                      "Trying again in "
+                                      "%s" % e.retry_after)
+                    self.interval_modifier = e.retry_after
+                self.wait(wait_time=self.interval_modifier)
+                self.interval_modifier = 0
+            initial_job_check = True
+            # Poll for async results if async (retrying where necessary)
+            while batch_host_guest_report.state not in [
+                AbstractVirtReport.STATE_CANCELED,
+                AbstractVirtReport.STATE_FAILED,
+                AbstractVirtReport.STATE_FINISHED]:
+                if self.interval_modifier != 0:
+                    wait_time = self.interval_modifier
                     self.interval_modifier = 0
-                # Poll for async results if async (retrying where necessary)
-                while batch_host_guest_report.state not in [
-                    AbstractVirtReport.STATE_CANCELED,
-                    AbstractVirtReport.STATE_FAILED,
-                    AbstractVirtReport.STATE_FINISHED]:
-                    if self.interval_modifier != 0:
-                        wait_time = self.interval_modifier
-                        self.interval_modifier = 0
-                    else:
-                        wait_time = self.polling_interval
+                else:
+                    wait_time = self.polling_interval
+                if not initial_job_check:
                     self.wait(wait_time=wait_time)
-                    try:
-                        self.dest.check_report_state(batch_host_guest_report)
-                    except ManagerThrottleError as e:
-                        self.logger.debug('429 encountered while checking job '
-                                          'state, checking again later')
-                        self.interval_modifier = e.retry_after
+                try:
+                    self.dest.check_report_state(batch_host_guest_report)
+                except ManagerThrottleError as e:
+                    self.logger.debug('429 encountered while checking job '
+                                      'state, checking again later')
+                    self.interval_modifier = e.retry_after
+                initial_job_check = False
 
-                # If the batch report did not reach the finished state
-                # we do not want to update which report we last sent (as we
-                # might want to try to send the same report again next time)
-                if batch_host_guest_report.state == \
-                        AbstractVirtReport.STATE_FINISHED:
-                    # Update the hash of the info last sent for each source
-                    # included in the successful report
-                    for source_key in reports_batched:
-                        self.last_report_for_source[source_key] = data_to_send[
-                            source_key].hash
-                        sources_sent.append(source_key)
+            # If the batch report did not reach the finished state
+            # we do not want to update which report we last sent (as we
+            # might want to try to send the same report again next time)
+            if batch_host_guest_report.state == \
+                    AbstractVirtReport.STATE_FINISHED:
+                # Update the hash of the info last sent for each source
+                # included in the successful report
+                for source_key in reports_batched:
+                    self.last_report_for_source[source_key] = data_to_send[
+                        source_key].hash
+                    sources_sent.append(source_key)
         # Send each Domain Guest List Report if necessary
         for source_key in DomainListReports:
             report = data_to_send[source_key]
@@ -627,9 +621,6 @@ class DestinationThread(IntervalThread):
                                           'guests.'
                                           'Retrying after: %s' % e.retry_after)
                         self.wait(wait_time=e.retry_after)
-            elif self.options.print_:
-                self.reports_to_print.append(report)
-                sources_sent.append(source_key)
 
         # Terminate this thread if we have sent one report for each source
         if all(source_key in sources_sent for source_key in self.source_keys)\
@@ -719,7 +710,7 @@ class Virt(IntervalThread):
     def _send_data(self, data_to_send):
         if self.is_terminated():
             sys.exit(0)
-        self.logger.debug('Report for config "%s" gathered, placing in '
+        self.logger.info('Report for config "%s" gathered, placing in '
                           'datastore', data_to_send.config.name)
         self.dest.put(self.config.name, data_to_send)
 

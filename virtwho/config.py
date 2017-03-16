@@ -172,13 +172,14 @@ class Info(object):
 # Should this be defined in the manager that actually requires these values?
 class Satellite5DestinationInfo(Info):
     required_kwargs = (
-        'sat_server',
-        'sat_username',
-        'sat_password',
+        "sat_server",
+        "sat_username",
+        "sat_password",
     )
-    optional_kwargs = ("filter_hosts",
-                       "exclude_hosts",
-                       )
+    optional_kwargs = (
+        "filter_hosts",
+        "exclude_hosts",
+    )
 
 
 # Should this be defined in the manager that actually requires these values?
@@ -189,17 +190,25 @@ class Satellite6DestinationInfo(Info):
         "rhsm_username",
         "rhsm_password",
     )
-    optional_kwargs = ("rhsm_hostname",
-                       "rhsm_port",
-                       "rhsm_prefix",
-                       "rhsm_proxy_hostname",
-                       "rhsm_proxy_port",
-                       "rhsm_proxy_user",
-                       "rhsm_proxy_password",
-                       "rhsm_insecure",
-                       #"filter_hosts",
-                       #"exclude_hosts",
-                       )
+    optional_kwargs = (
+        "rhsm_hostname",
+        "rhsm_port",
+        "rhsm_prefix",
+        "rhsm_proxy_hostname",
+        "rhsm_proxy_port",
+        "rhsm_proxy_user",
+        "rhsm_proxy_password",
+        "rhsm_insecure",
+        #"filter_hosts",
+        #"exclude_hosts",
+    )
+
+
+class Satellite6DefaultDestinationInfo(Info):
+    required_kwargs = (
+        "name"
+        "type"
+    )
 
 
 class GeneralConfig(object):

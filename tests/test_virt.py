@@ -458,7 +458,11 @@ class TestDestinationThread(TestBase):
         destination_thread.wait.assert_has_calls([call(
                 wait_time=error_to_throw.retry_after)])
 
-    def test_report_hash_added_after_send(self):
+    def test_duplicate_reports_are_ignored(self):
+        """
+        Test that duplicate reports are filtered out when retrieving items
+        from the data store
+        """
         source_keys = ['source1', 'source2']
         interval = 1
         terminate_event = Mock()
@@ -509,3 +513,11 @@ class TestDestinationThread(TestBase):
             'source2': report3
         }
         self.assertEqual(next_data_to_send, expected_next_data_to_send)
+
+
+class TestDestinationThreadTiming(TestBase):
+    """
+    A group of tests meant to show that the destination thread does things
+    in the right amount of time given different circumstances.
+    """
+    pass

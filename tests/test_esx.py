@@ -189,14 +189,13 @@ class TestEsx(TestBase):
         updateSet.version = 'some_new_version_string'
         updateSet.truncated = False
         mock_client.return_value.service.WaitForUpdatesEx.return_value = updateSet
-        queue = Queue()
+        datastore = Datastore()
         self.esx.applyUpdates = Mock()
         getHostGuestMappingMock = Mock()
         getHostGuestMappingMock.return_value = expected_assoc
         self.esx.getHostGuestMapping = getHostGuestMappingMock
-        self.run_once(queue)
-        self.assertEqual(queue.qsize(), 1)
-        result_report = queue.get(block=True, timeout=1)
+        self.run_once(datastore)
+        result_report = datastore.get(self.esx.config.name)
         self.assertEqual(expected_report.config.hash, result_report.config.hash)
         self.assertEqual(expected_report._assoc, result_report._assoc)
 

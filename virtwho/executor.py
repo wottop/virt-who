@@ -88,6 +88,9 @@ class Executor(object):
         self.destinations = []
 
         for info in self.configManager.dests:
+            # Dests should already include the dest parsed from the CLI/env
+            # If there is not a valid dest parsed from the CLI/env we'll have
+            # to create a dest with
             source_keys = self.configManager.dest_to_sources_map[info]
             info.name = "Destination_%s" % hash(info)
             logger = log.getLogger(name=info.name)
@@ -184,10 +187,12 @@ class Executor(object):
         Executor.wait_on_threads(self.virts)
 
         if self.options.print_:
-            to_print = []
+            to_print = {}
             for source in self.configManager.sources:
                 try:
-                    to_print.append(self.datastore.get(source))
+                    report = self.datastore.get(source)
+                    config = report.config
+                    to_print[config] = report
                 except KeyError:
                     self.logger.info('Unable to retrieve report for source '
                                      '\"%s\" for printing' % source)

@@ -596,25 +596,46 @@ class ConfigManager(object):
         for config in configs:
             sources.add(config.name)
             sources_without_destinations.add(config.name)
-            for dest_class in dest_classes:
-                dest = None
-                try:
-                    # Bad, do not use private instance attributes
-                    dest = dest_class(**config._options)
-                except ValueError as e:
-                    # If we can't make this dest from the config, ignore
-                    pass  # print e
-                if dest:
-                    dests.add(dest)
-                    current_sources = dest_to_source_map.get(dest, set())
-                    current_sources.symmetric_difference_update(
-                            set([config.name]))
-                    sources_without_destinations.difference_update(set([
-                        config.name]))
-                    dest_to_source_map[dest] = current_sources
+            for dest in ConfigManager.parse_dests_from_dict(config._options,
+                                                            dest_classes):
+                dests.add(dest)
+                current_sources = dest_to_source_map.get(dest, set())
+                current_sources.symmetric_difference_update(set([config.name]))
+                sources_without_destinations.difference_update(
+                        set([config.name]))
+                dest_to_source_map[dest] = current_sources
         for dest, source_set in dest_to_source_map.iteritems():
             dest_to_source_map[dest] = sorted(list(source_set))
         return sources, dests, dest_to_source_map, sources_without_destinations
+
+    @staticmethod
+    def parse_dests_from_dict(dict_to_parse,
+                              dest_classes=(
+                                Satellite5DestinationInfo,
+                                Satellite6DestinationInfo,
+                              )):
+        """
+        @param dict_to_parse: The dict of kwargs to try to create a
+        destination out of
+        @type dict_to_parse: dict
+
+        @param dest_classes: An iterable of Info classes to try to create
+            based on the given dict of options
+        @type dest_classes: collections.Iterable
+
+        @return: A set of the info objects that could be created from the
+        given dict
+        @rtype: set
+        """
+        dests = set()
+        for dest_class in dest_classes:
+            dest = None
+            try:
+                dest = dest_class(**dict_to_parse)
+            except ValueError:
+                continue
+            dests.add(dest)
+        return dests
 
     @property
     def configs(self):

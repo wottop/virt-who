@@ -9,7 +9,7 @@ from mock import Mock, patch, call
 from threading import Event
 
 from virtwho.config import ConfigManager, Config
-from virtwho.manager import ManagerThrottleError
+from virtwho.manager import ManagerThrottleError, ManagerFatalError
 from virtwho.virt import HostGuestAssociationReport, Hypervisor, Guest, \
     DestinationThread, ErrorReport, AbstractVirtReport, DomainListReport
 
@@ -310,8 +310,9 @@ class TestDestinationThread(TestBase):
         # check_report_state function will modify the report to be in the
         # successful state after the first call, we expect to wait exactly
         # twice, both of duration config.polling_interval
-        destination_thread.wait.assert_has_calls([call(wait_time=config.polling_interval),
-                                                 call(wait_time=config.polling_interval)])
+        destination_thread.wait.assert_has_calls([
+            call(wait_time=config.polling_interval),
+        ])
 
     def test_send_data_poll_async_429(self):
         # This test's that when a 429 is detected during async polling
@@ -356,8 +357,7 @@ class TestDestinationThread(TestBase):
                 return report
             return mock_check_report_state
         states = [error_to_throw, AbstractVirtReport.STATE_FINISHED]
-        expected_wait_calls = [call(wait_time=config.polling_interval),
-                               call(wait_time=error_to_throw.retry_after)]
+        expected_wait_calls = [call(wait_time=error_to_throw.retry_after)]
 
         check_report_mock = check_report_state_closure(states)
         manager.check_report_state = Mock(side_effect=check_report_mock)
@@ -513,6 +513,53 @@ class TestDestinationThread(TestBase):
             'source2': report3
         }
         self.assertEqual(next_data_to_send, expected_next_data_to_send)
+
+
+class TestDestinationThreadErrors(TestBase):
+    """
+    A group of tests that show what the DestinationThread's behavior is in
+    erroneous cases.
+    """
+    def setUp(self):
+        self.config = Mock()
+        self.source_keys = ['source1']
+        self.datastore = {}
+        self.manager = Mock()
+        self.interval = 10
+        self.terminate_event = Mock()
+        self.oneshot = False
+        self.options = Mock()
+        self.options.print_ = False
+        self.destination_thread = DestinationThread(self.logger, self.config,
+                                               source_keys=self.source_keys,
+                                               source=self.datastore,
+                                               dest=self.manager,
+                                               interval=self.interval,
+                                               terminate_event=self.terminate_event,
+                                               oneshot=self.oneshot,
+                                               options=self.options)
+
+    def test_managerfatalerror_thrown_during_send_data(self):
+        """
+        Test that when a managerfatalerror is thrown, the thread exits
+        This is because the destination thread needs a functional manager
+        object in order to accomplish it's tasks. The ManagerFatalError
+        should only be thrown when there is an error from which we cannot
+        recover.
+        """
+        config = Config('source1', 'esx')
+        virt = Mock()
+        virt.CONFIG_TYPE = 'esx'
+        guest = Guest('GUUID1', virt, Guest.STATE_RUNNING)
+        assoc = {'hypervisors': [Hypervisor('hypervisor_id_1', [guest])]}
+        report = HostGuestAssociationReport(config, assoc)
+        data_to_send = {'source1': report}
+        self.destination_thread.stop = Mock(wraps=self.destination_thread.stop)
+        self.manager.hypervisorCheckIn = Mock(side_effect=ManagerFatalError)
+        self.assertRaises(ManagerFatalError,
+                          self.destination_thread._send_data, data_to_send)
+        self.destination_thread.stop.assert_called()
+
 
 
 class TestDestinationThreadTiming(TestBase):

@@ -44,6 +44,10 @@ class TestOptions(TestBase):
     def setUp(self):
         self.clearEnv()
 
+    def tearDown(self):
+        self.clearEnv()
+        super(TestBase, self).tearDown()
+
     def clearEnv(self):
         for key in os.environ.keys():
             if key.startswith("VIRTWHO"):

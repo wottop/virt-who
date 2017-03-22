@@ -187,28 +187,26 @@ class Satellite6DestinationInfo(Info):
     required_kwargs = (
         "env",
         "owner",
-        "rhsm_username",
-        "rhsm_password",
     )
     optional_kwargs = (
         "rhsm_hostname",
         "rhsm_port",
         "rhsm_prefix",
+        "rhsm_username",
+        "rhsm_password",
         "rhsm_proxy_hostname",
         "rhsm_proxy_port",
         "rhsm_proxy_user",
         "rhsm_proxy_password",
         "rhsm_insecure",
-        #"filter_hosts",
-        #"exclude_hosts",
     )
 
 
-class Satellite6DefaultDestinationInfo(Info):
-    required_kwargs = (
-        "name"
-        "type"
-    )
+class DefaultDestinationInfo(Info):
+    pass
+
+
+default_destination_info = DefaultDestinationInfo()
 
 
 class GeneralConfig(object):
@@ -635,6 +633,9 @@ class ConfigManager(object):
             except ValueError:
                 continue
             dests.add(dest)
+
+        if len(dests) == 0:
+            dests.add(default_destination_info)
         return dests
 
     @property

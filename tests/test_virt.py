@@ -515,53 +515,6 @@ class TestDestinationThread(TestBase):
         self.assertEqual(next_data_to_send, expected_next_data_to_send)
 
 
-class TestDestinationThreadErrors(TestBase):
-    """
-    A group of tests that show what the DestinationThread's behavior is in
-    erroneous cases.
-    """
-    def setUp(self):
-        self.config = Mock()
-        self.source_keys = ['source1']
-        self.datastore = {}
-        self.manager = Mock()
-        self.interval = 10
-        self.terminate_event = Mock()
-        self.oneshot = False
-        self.options = Mock()
-        self.options.print_ = False
-        self.destination_thread = DestinationThread(self.logger, self.config,
-                                               source_keys=self.source_keys,
-                                               source=self.datastore,
-                                               dest=self.manager,
-                                               interval=self.interval,
-                                               terminate_event=self.terminate_event,
-                                               oneshot=self.oneshot,
-                                               options=self.options)
-
-    def test_managerfatalerror_thrown_during_send_data(self):
-        """
-        Test that when a managerfatalerror is thrown, the thread exits
-        This is because the destination thread needs a functional manager
-        object in order to accomplish it's tasks. The ManagerFatalError
-        should only be thrown when there is an error from which we cannot
-        recover.
-        """
-        config = Config('source1', 'esx')
-        virt = Mock()
-        virt.CONFIG_TYPE = 'esx'
-        guest = Guest('GUUID1', virt, Guest.STATE_RUNNING)
-        assoc = {'hypervisors': [Hypervisor('hypervisor_id_1', [guest])]}
-        report = HostGuestAssociationReport(config, assoc)
-        data_to_send = {'source1': report}
-        self.destination_thread.stop = Mock(wraps=self.destination_thread.stop)
-        self.manager.hypervisorCheckIn = Mock(side_effect=ManagerFatalError)
-        self.assertRaises(ManagerFatalError,
-                          self.destination_thread._send_data, data_to_send)
-        self.destination_thread.stop.assert_called()
-
-
-
 class TestDestinationThreadTiming(TestBase):
     """
     A group of tests meant to show that the destination thread does things

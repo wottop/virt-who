@@ -115,8 +115,11 @@ class Info(object):
 
         for arg in attributes_to_add:
             try:
-                self._options[arg] = kwargs[arg]
-            except KeyError:
+                value = kwargs[arg]
+                if value in [None, NotSetSentinel, '']:
+                    raise TypeError
+                self._options[arg] = value
+            except (KeyError, TypeError):
                 if arg in type(self).required_kwargs:
                     raise ValueError("Missing required option: %s" % arg)
 
@@ -207,6 +210,7 @@ class DefaultDestinationInfo(Info):
 
 
 default_destination_info = DefaultDestinationInfo()
+default_destination_info.name = "default_destination"
 
 
 class GeneralConfig(object):
@@ -234,7 +238,7 @@ class GeneralConfig(object):
             super(GeneralConfig, self).__getattr__(name)
 
         value = self._options.get(name, None)
-        if value is None:
+        if value is None or value is NotSetSentinel:
             if name in self.DEFAULTS:
                 return self.DEFAULTS[name]
             else:
@@ -403,7 +407,7 @@ class Config(GeneralConfig):
 
         for option in self.LATIN1_OPTIONS:
             value = self._options.get(option)
-            if not value:
+            if not value or value is NotSetSentinel:
                 continue
             try:
                 value.encode('latin1')
@@ -542,6 +546,9 @@ class ConfigManager(object):
         sources, dests, d_to_s, orphan_sources = \
             ConfigManager.map_destinations_to_sources(
                 self._configs)
+        if orphan_sources:
+            d_to_s[default_destination_info] = orphan_sources
+            dests.add(default_destination_info)
         self.sources = sources
         self.dests = dests
         self.dest_to_sources_map = d_to_s
@@ -577,6 +584,7 @@ class ConfigManager(object):
 
         @rtype: (set, set, dict)
         """
+
         # Will include the names of the configs
         sources = set()
         sources_without_destinations = set()
@@ -604,6 +612,7 @@ class ConfigManager(object):
                 dest_to_source_map[dest] = current_sources
         for dest, source_set in dest_to_source_map.iteritems():
             dest_to_source_map[dest] = sorted(list(source_set))
+        sources_without_destinations = sorted(list(sources_without_destinations))
         return sources, dests, dest_to_source_map, sources_without_destinations
 
     @staticmethod
@@ -633,9 +642,6 @@ class ConfigManager(object):
             except ValueError:
                 continue
             dests.add(dest)
-
-        if len(dests) == 0:
-            dests.add(default_destination_info)
         return dests
 
     @property

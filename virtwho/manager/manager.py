@@ -97,11 +97,12 @@ class Manager(object):
         from virtwho.manager.satellite import Satellite
 
         from virtwho.config import Satellite6DestinationInfo, \
-            Satellite5DestinationInfo
+            Satellite5DestinationInfo, DefaultDestinationInfo
 
         info_to_manager_map = {
             Satellite5DestinationInfo: Satellite,
-            Satellite6DestinationInfo: SubscriptionManager
+            Satellite6DestinationInfo: SubscriptionManager,
+            DefaultDestinationInfo: SubscriptionManager,
         }
 
         return info_to_manager_map[type(info)](logger, options)

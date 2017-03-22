@@ -508,7 +508,7 @@ if __name__ == '__main__':  # pragma: no cover
             while True:
                 print(q.get(True).association)
     p = Printer()
-    p.daemon = True
+    q = True
     p.start()
     try:
         vsphere.start_sync(q, Event())

@@ -57,13 +57,14 @@ class SubscriptionManager(Manager):
         self.logger = logger
         self.options = options
         self.cert_uuid = None
-
-        self.rhsm_config = rhsm_config.initConfig(rhsm_config.DEFAULT_CONFIG_PATH)
+        self.rhsm_config = None
         self.readConfig()
 
     def readConfig(self):
         """ Parse rhsm.conf in order to obtain consumer
             certificate and key paths. """
+        self.rhsm_config = rhsm_config.initConfig(
+            rhsm_config.DEFAULT_CONFIG_PATH)
         consumerCertDir = self.rhsm_config.get("rhsm", "consumerCertDir")
         cert = 'cert.pem'
         key = 'key.pem'
@@ -83,7 +84,6 @@ class SubscriptionManager(Manager):
             'proxy_password': self.rhsm_config.get('server', 'proxy_password'),
             'insecure': self.rhsm_config.get('server', 'insecure')
         }
-
         kwargs_to_config = {
             'host': 'rhsm_hostname',
             'ssl_port': 'rhsm_port',
@@ -99,8 +99,16 @@ class SubscriptionManager(Manager):
         rhsm_password = None
 
         if config:
-            rhsm_username = config.rhsm_username
-            rhsm_password = config.rhsm_password
+            try:
+                rhsm_username = config['rhsm_username']
+                rhsm_password = config['rhsm_password']
+            except KeyError:
+                pass
+
+            if rhsm_username == NotSetSentinel:
+                rhsm_username = None
+            if rhsm_password == NotSetSentinel:
+                rhsm_password = None
 
             # Testing for None is necessary, it might be an empty string
             for key, value in kwargs.iteritems():
@@ -113,30 +121,6 @@ class SubscriptionManager(Manager):
                         kwargs[key] = from_config
                 except KeyError:
                     continue
-
-            # if config.rhsm_hostname is not None:
-            #     kwargs['host'] = config.rhsm_hostname
-            #
-            # if config.rhsm_port is not None:
-            #     kwargs['ssl_port'] = int(config.rhsm_port)
-            #
-            # if config.rhsm_prefix is not None:
-            #     kwargs['handler'] = config.rhsm_prefix
-            #
-            # if config.rhsm_proxy_hostname is not None:
-            #     kwargs['proxy_hostname'] = config.rhsm_proxy_hostname
-            #
-            # if config.rhsm_proxy_port is not None:
-            #     kwargs['proxy_port'] = config.rhsm_proxy_port
-            #
-            # if config.rhsm_proxy_user is not None:
-            #     kwargs['proxy_user'] = config.rhsm_proxy_user
-            #
-            # if config.rhsm_proxy_password is not None:
-            #     kwargs['proxy_password'] = config.rhsm_proxy_password
-            #
-            # if config.rhsm_insecure is not None:
-            #     kwargs['insecure'] = config.rhsm_insecure
 
         if rhsm_username and rhsm_password:
             self.logger.debug("Authenticating with RHSM username %s", rhsm_username)

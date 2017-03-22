@@ -13,7 +13,8 @@ from virtwho.manager import (
     Manager, ManagerThrottleError, ManagerError, ManagerFatalError)
 from virtwho.virt import (
     AbstractVirtReport, ErrorReport, DomainListReport,
-    HostGuestAssociationReport, Virt, DestinationThread)
+    HostGuestAssociationReport, Virt, DestinationThread,
+    info_to_destination_class)
 
 try:
     from collections import OrderedDict
@@ -50,17 +51,17 @@ class Executor(object):
         for config in self.configManager.configs:
             logger.debug("Using config named '%s'" % config.name)
 
-    def _create_virt_backends(self, reset=False):
+    def _create_virt_backends(self, virts, reset=False):
         """Populate self.virts with virt backend threads
 
             @param reset: Whether to kill existing backends or not, defaults
             to false
             @type: bool
         """
-        if reset and self.virts is not None and len(self.virts) > 0:
-            self.terminate_threads(self.virts)
+        if reset and virts is not None and len(virts) > 0:
+            self.terminate_threads(virts)
 
-        self.virts = []
+        virts = []
 
         for config in self.configManager.configs:
             try:
@@ -72,54 +73,40 @@ class Executor(object):
             except Exception as e:
                 self.logger.error('Unable to use configuration "%s": %s', config.name, str(e))
                 continue
-            self.virts.append(virt)
+            virts.append(virt)
+        return virts
 
-    def _create_destinations(self, reset=False):
+    def _create_destinations(self, dests, reset=False):
         """Populate self.destinations with a list of  list with them
 
             @param reset: Whether to kill existing destinations or not, defaults
             to false
             @type: bool
         """
-        if reset and self.destinations is not None and \
-                        len(self.destinations) > 0:
-            self.terminate_threads(self.destinations)
+        if reset and dests is not None and \
+                        len(dests) > 0:
+            self.terminate_threads(dests)
 
-        self.destinations = []
+        dests = []
 
         for info in self.configManager.dests:
             # Dests should already include the dest parsed from the CLI/env
             # If there is not a valid dest parsed from the CLI/env we'll have
             # to create a dest with
             source_keys = self.configManager.dest_to_sources_map[info]
-            info.name = "Destination_%s" % hash(info)
+            info.name = "destination_%s" % hash(info)
             logger = log.getLogger(name=info.name)
             manager = Manager.fromInfo(logger, self.options, info)
-            dest = DestinationThread(config=info, logger=logger,
-                                     source_keys=source_keys,
-                                     options=self.options,
-                                     source=self.datastore, dest=manager,
-                                     terminate_event=self.terminate_event,
-                                     interval=self.options.interval,
-                                     oneshot=self.options.oneshot)
-            self.destinations.append(dest)
-
-        if len(self.destinations) == 0:
-            # Try to use the destination from the CLI / defaults if there is
-            # a valid one
-            source_keys = list(self.configManager.sources)
-            logger = log.getLogger(name="Default_Destination")
-            manager = Manager.fromOptions(logger, self.options)
-            # Set the name of the given options to
-            self.options.name = "Destination_Default"
-            dest = DestinationThread(config=self.options, logger=logger,
-                                     source_keys=source_keys,
-                                     options=self.options,
-                                     source=self.datastore, dest=manager,
-                                     terminate_event=self.terminate_event,
-                                     interval=self.options.interval,
-                                     oneshot=self.options.oneshot)
-            self.destinations.append(dest)
+            dest_class = info_to_destination_class[type(info)]
+            dest = dest_class(config=info, logger=logger,
+                              source_keys=source_keys,
+                              options=self.options,
+                              source=self.datastore, dest=manager,
+                              terminate_event=self.terminate_event,
+                              interval=self.options.interval,
+                              oneshot=self.options.oneshot)
+            dests.append(dest)
+        return dests
 
     @staticmethod
     def wait_on_threads(threads, max_wait_time=None, kill_on_timeout=False):
@@ -150,11 +137,14 @@ class Executor(object):
                     Executor.terminate_threads(threads_not_terminated)
                     return []
                 return threads_not_terminated
-            time.sleep(1)
-            total_waited += 1
-            for thread in threads:
+            for thread in threads_not_terminated:
                 if thread.is_terminated():
                     threads_not_terminated.remove(thread)
+            if not threads_not_terminated:
+                break
+            time.sleep(1)
+            if max_wait_time is not None:
+                total_waited += 1
         return threads_not_terminated
 
     @staticmethod
@@ -165,7 +155,7 @@ class Executor(object):
 
     def run_oneshot(self):
         # Start all sources
-        self._create_virt_backends()
+        self.virts = self._create_virt_backends(self.virts)
 
         if len(self.virts) == 0:
             err = "virt-who can't be started: no suitable virt backend found"
@@ -173,7 +163,7 @@ class Executor(object):
             self.stop_threads()
             sys.exit(err)
 
-        self._create_destinations()
+        self.destinations = self._create_destinations(self.destinations)
 
         if len(self.destinations) == 0:
             err = "virt-who can't be started: no suitable destinations found"
@@ -204,42 +194,21 @@ class Executor(object):
         Executor.wait_on_threads(self.destinations)
 
     def run(self):
-        self.reloading = False
-        self.logger.debug("Starting infinite loop with %d seconds interval", self.options.interval)
+        if not self.reloading:
+            self.logger.debug("Starting infinite loop with %d seconds interval", self.options.interval)
+        else:
+            self.logger.debug("Restarting infinite loop with %d seconds "
+                              "interval", self.options.interval)
+            # Clear out old reports from the in-memory datastore
+            self.datastore = Datastore()
 
         # Need to update the dest to source mapping of the configManager object
         # here because of the way that main reads the config from the command
         # line
         self.configManager.update_dest_to_source_map()
-
-        for config in self.configManager.configs:
-            try:
-                logger = log.getLogger(config=config)
-                virt = Virt.from_config(logger, config, self.datastore,
-                                        terminate_event=self.terminate_event,
-                                        interval=self.options.interval,
-                                        oneshot=self.options.oneshot)
-            except Exception as e:
-                self.logger.error('Unable to use configuration "%s": %s', config.name, str(e))
-                continue
-            # Run the thread
-            virt.start()
-            self.virts.append(virt)
-
-        for info in self.configManager.dests:
-            source_keys = self.configManager.dest_to_sources_map[info]
-            info.name = "Destination_%s" % hash(info)
-            logger = log.getLogger(name=info.name)
-            manager = Manager.fromInfo(logger, self.options, info)
-            dest = DestinationThread(config=info, logger=logger,
-                                     source_keys=source_keys,
-                                     options=self.options,
-                                     source=self.datastore, dest=manager,
-                                     terminate_event=self.terminate_event,
-                                     interval=self.options.interval,
-                                     oneshot=self.options.oneshot)
-            dest.start()
-            self.destinations.append(dest)
+        # Start all sources
+        self.virts = self._create_virt_backends(self.virts,
+                                                reset=self.reloading)
 
         if len(self.virts) == 0:
             err = "virt-who can't be started: no suitable virt backend found"
@@ -247,43 +216,26 @@ class Executor(object):
             self.stop_threads()
             sys.exit(err)
 
-        # Need to find sources that have no destination to go to
+        self.destinations = self._create_destinations(self.destinations,
+                                                      reset=self.reloading)
+        if len(self.destinations) == 0:
+            err = "virt-who can't be started: no suitable destinations found"
+            self.logger.error(err)
+            self.stop_threads()
+            sys.exit(err)
 
-        if len(self.destinations) <= 0:
-            # Try to use the default destination (the one that the local system
-            # is currently registered to.)
-            self.logger.warning("No destinations found, using default")
-            try:
-                # Find sources that have no destination to go to
-                source_keys = list(self.configManager.sources)
-                logger = log.getLogger(name="Default_Destination")
-                manager = Manager.fromOptions(logger, self.options)
-                # Set the name of the given options to
-                self.options.name = "Destination_Default"
-                dest = DestinationThread(config=self.options, logger=logger,
-                                         source_keys=source_keys,
-                                         options=self.options,
-                                         source=self.datastore, dest=manager,
-                                         terminate_event=self.terminate_event,
-                                         interval=self.options.interval,
-                                         oneshot=self.options.oneshot)
-                dest.start()
-                self.destinations.append(dest)
-            except:
-                err = "virt-who can't be started: no suitable destination found"
-                self.logger.exception(err)
-                self.stop_threads()
-                sys.exit(err)
+        self.reloading = False
+
+        for thread in self.virts:
+            thread.start()
+
+        for thread in self.destinations:
+            thread.start()
 
         # Interruptibly wait on the other threads to be terminated
-        while not self.terminated():
-            time.sleep(1)
+        self.wait_on_threads(self.destinations)
 
         self.stop_threads()
-
-        # TODO: Completely rewrite how the --print option is handled
-        if self.options.print_:
-            return self.to_print
 
     def terminated(self):
         """
@@ -300,7 +252,6 @@ class Executor(object):
         return result
 
     def stop_threads(self):
-        print "STOPPING ALL (non-main) THREADS"
         if self.terminate_event.is_set():
             return
         self.terminate_event.set()
@@ -308,7 +259,6 @@ class Executor(object):
         self.virts = []
         self.terminate_threads(self.destinations)
         self.destinations = []
-        print "THREADS SHOULD BE STOPPED"
 
     def terminate(self):
         self.logger.debug("virt-who is shutting down")
@@ -317,5 +267,5 @@ class Executor(object):
     def reload(self):
         self.logger.warn("virt-who reload")
         # Set the terminate event in all the virts
-        self.stop_threads()
         self.reloading = True
+

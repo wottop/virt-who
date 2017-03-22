@@ -105,6 +105,8 @@ def atexit_fn(*args, **kwargs):
 def reload(signal, stackframe):
     if executor:
         executor.reload()
+        raise ReloadRequest()
+    exit(1, status="virt-who cannot reload, exiting")
 
 
 def main():
@@ -205,11 +207,7 @@ def main():
 def _main(executor):
     result = None
     if executor.options.oneshot:
-        try:
-            result = executor.run_oneshot()
-        except ManagerFatalError:
-            executor.stop_threads()
-            executor.logger.exception("Fatal error:")
+        result = executor.run_oneshot()
 
         if executor.options.print_:
             if not result:
@@ -245,20 +243,10 @@ def _main(executor):
     # We'll get here only if we're not in oneshot or print_ mode (which
     # implies oneshot)
 
-    try:
-        executor.run()
-    except ManagerFatalError:
-        executor.stop_threads()
-        executor.logger.exception("Fatal error:")
-        if not executor.options.oneshot:
-            executor.logger.info("Waiting for reload signal")
-            # Wait indefinitely until we get reload or exit signal
-            while True:
-                report = executor.queue.get(block=True)
-                if report == 'reload':
-                    raise ReloadRequest()
-                elif report == 'exit':
-                    return 0
+    # There should not be a way for us to leave this method unless it is time
+    #  to exit
+    executor.run()
+
     return 0
 
 
@@ -278,10 +266,12 @@ def exit(code, status=None):
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             for v in executor.virts:
                 v.stop()
-                v.join()
+                if v.ident:
+                    v.join()
             for d in executor.destinations:
                 d.stop()
-                d.join()
+                if d.ident:
+                    d.join()
     if log.hasQueueLogger():
         queueLogger = log.getQueueLogger()
         queueLogger.terminate()

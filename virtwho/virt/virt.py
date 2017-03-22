@@ -28,8 +28,9 @@ import json
 import hashlib
 import re
 import fnmatch
-from virtwho.config import NotSetSentinel
-from virtwho.manager import ManagerError, ManagerThrottleError
+from virtwho.config import NotSetSentinel, Satellite5DestinationInfo, \
+    Satellite6DestinationInfo, DefaultDestinationInfo
+from virtwho.manager import ManagerError, ManagerThrottleError, ManagerFatalError
 
 try:
     from collections import OrderedDict
@@ -432,6 +433,7 @@ class DestinationThread(IntervalThread):
 
     This class should work so long as the destination is a Manager object.
     """
+
     def __init__(self, logger, config, source_keys=None, options=None,
                  source=None, dest=None, terminate_event=None, interval=None,
                  oneshot=False):
@@ -479,10 +481,8 @@ class DestinationThread(IntervalThread):
         """
         reports = {}
         for source_key in self.source_keys:
-            #self.logger.debug("GETTING DATA FOR SOURCE: %s" % source_key)
             report = self.source.get(source_key, NotSetSentinel)
 
-            #self.logger.debug("REPORT: %s" % report)
             if report is None or report is NotSetSentinel:
                 self.logger.debug("No report available for source: %s" %
                                   source_key)
@@ -504,30 +504,21 @@ class DestinationThread(IntervalThread):
             return
         if isinstance(data_to_send, ErrorReport):
             self.logger.info('Error report received, shutting down')
-            self._internal_terminate_event.set()
+            self.stop()
             return
-        #self.logger.debug("IT APPEARS WE HAVE DATA TO SEND")
         all_hypervisors = [] # All the Host-guest mappings together
-        DomainListReports = []  # Source_keys of DomainListReports
+        domain_list_reports = []  # Source_keys of DomainListReports
         reports_batched = []  # Source_keys of reports to be sent as one
         sources_sent = []  # Sources we have dealt with this run
-
+        sources_erred = []
         # Reports of different types are handled differently
         for source_key, report in data_to_send.iteritems():
             if isinstance(report, DomainListReport):
                 # These are sent one at a time to the destination
-                # self.logger.debug("FOUND DOMAINGUESTLIST REPORT FOR SOURCE: "
-                #                   "%s" % source_key)
-                DomainListReports.append(source_key)
+                domain_list_reports.append(source_key)
                 continue
             if isinstance(report, HostGuestAssociationReport):
                 # These reports are put into one report to send at once
-                #self.logger.debug("FOUND HYPERVISORGUESTASSOCIATIONREPORT
-                # FOR SOURCE: %s" % source_key)
-                # self.logger.debug("REPORT ASSOCIATION: %s" %
-                #                   report.association['hypervisors'])
-                # self.logger.debug("REPORT _ASSOC: %s" %
-                #                   report._assoc)
                 all_hypervisors.extend(report.association['hypervisors'])
                 # Keep track of those reports that we have
                 reports_batched.append(source_key)
@@ -541,12 +532,11 @@ class DestinationThread(IntervalThread):
                 self.logger.debug('ErrorReport received for source: %s' % source_key)
                 if self._oneshot:
                     # Consider this source dealt with if we are in oneshot mode
-                    sources_sent.append(source_key)
+                    sources_erred.append(source_key)
 
         if all_hypervisors:
             # Modify the batched dict to be in the form expected for
             # HostGuestAssociationReports
-            #self.logger.debug("ALL HYPERVISORS: %s" % all_hypervisors)
             all_hypervisors = {'hypervisors': all_hypervisors}
             batch_host_guest_report = HostGuestAssociationReport(self.config,
                                                                  all_hypervisors)
@@ -565,11 +555,17 @@ class DestinationThread(IntervalThread):
                                       "Trying again in "
                                       "%s" % e.retry_after)
                     self.interval_modifier = e.retry_after
+                except (ManagerError, ManagerFatalError):
+                    self.logger.exception("Error during hypervisor "
+                                        "checkin: ")
+                    if self._oneshot:
+                        sources_erred.extend(reports_batched)
+                    break
                 self.wait(wait_time=self.interval_modifier)
                 self.interval_modifier = 0
             initial_job_check = True
             # Poll for async results if async (retrying where necessary)
-            while batch_host_guest_report.state not in [
+            while result and batch_host_guest_report.state not in [
                 AbstractVirtReport.STATE_CANCELED,
                 AbstractVirtReport.STATE_FAILED,
                 AbstractVirtReport.STATE_FINISHED]:
@@ -586,6 +582,11 @@ class DestinationThread(IntervalThread):
                     self.logger.debug('429 encountered while checking job '
                                       'state, checking again later')
                     self.interval_modifier = e.retry_after
+                except (ManagerError, ManagerFatalError):
+                    self.logger.exception("Error during job check: ")
+                    if self._oneshot:
+                        sources_sent.extend(reports_batched)
+                    break
                 initial_job_check = False
 
             # If the batch report did not reach the finished state
@@ -600,7 +601,7 @@ class DestinationThread(IntervalThread):
                         source_key].hash
                     sources_sent.append(source_key)
         # Send each Domain Guest List Report if necessary
-        for source_key in DomainListReports:
+        for source_key in domain_list_reports:
             report = data_to_send[source_key]
             if not self.options.print_:
                 retry = True
@@ -611,16 +612,102 @@ class DestinationThread(IntervalThread):
                         self.last_report_for_source[source_key] = data_to_send[
                             source_key].hash
                         retry = False
-                    except ManagerError:
-                        self.logger.debug("Error in manager, "
-                                          "unable to send virt "
-                                          "guests for source: %s" % source_key)
-                        retry = False  # Only retry on 429
                     except ManagerThrottleError as e:
                         self.logger.debug('429 encountered when sending virt '
                                           'guests.'
                                           'Retrying after: %s' % e.retry_after)
                         self.wait(wait_time=e.retry_after)
+                    except (ManagerError, ManagerFatalError):
+                        self.logger.exception("Fatal error during send virt "
+                                              "guests: ")
+                        if self._oneshot:
+                            sources_erred.append(source_key)
+                        retry = False  # Only retry on 429
+
+        # Terminate this thread if we have sent one report for each source
+        if all((source_key in sources_sent or source_key in sources_erred)
+               for source_key in self.source_keys) and self._oneshot:
+            if not self.options.print_:
+                self.logger.debug('At least one report for each connected '
+                                  'source has been sent. Terminating.')
+            else:
+                self.logger.debug('All info to print has been gathered. '
+                                  'Terminating.')
+            self.stop()
+        if self._oneshot:
+            # Remove sources we have sent (or dealt with) so that we don't
+            # do extra work on the next run, should we have missed any sources
+            self.source_keys = [source_key for source_key in self.source_keys
+                                if source_key not in sources_sent]
+        return
+
+
+class Satellite5DestinationThread(DestinationThread):
+
+    def _send_data(self, data_to_send):
+        """
+        Processes the data_to_send and sends it using the dest object.
+        @param data_to_send: A dict of source_keys, report
+        @type: dict
+        """
+        if not data_to_send:
+            self.logger.debug('No data to send, waiting for next interval')
+            return
+        if isinstance(data_to_send, ErrorReport):
+            self.logger.info('Error report received, shutting down')
+            self.stop()
+            return
+        sources_sent = []  # Sources we have dealt with this run
+        sources_erred = []  # Sources that have had some error this run
+
+        # Reports of different types are handled differently
+        for source_key, report in data_to_send.iteritems():
+            if isinstance(report, DomainListReport):
+                self.logger.warning("virt-who does not support sending local"
+                                    "hypervisor data to satellite; use "
+                                    "rhn-virtualization-host "
+                                    "instead; Dropping offending source: '%s'",
+                                    source_key)
+                # Do not attempt to send such reports, satellite 5 does not
+                # know what to do with such reports. Since we do not know
+                # what to do, and virt backends will not change their output
+                # without a restart, drop this source from those that we check.
+                sources_erred.append(source_key)
+                continue
+            if isinstance(report, HostGuestAssociationReport):
+                # We cannot (effectively) batch reports to be checked in in
+                # one communication via Satellite 5. As such we'll just do a
+                # hypervisor check in for each report of that type.
+                result = None
+                while result is None:
+                    try:
+                        result = self.dest.hypervisorCheckIn(
+                                report,
+                                options=self.options)
+                        self.last_report_for_source[source_key] = report.hash
+                        sources_sent.append(source_key)
+                        break
+                    except ManagerThrottleError as e:
+                        self.logger.debug("429 encountered while performing "
+                                          "hypervisor check in.\n"
+                                          "Trying again in "
+                                          "%s" % e.retry_after)
+                        self.interval_modifier = e.retry_after
+                    except ManagerFatalError:
+                        self.logger.exception("Fatal error during hypervisor "
+                                              "checkin: ")
+                        sources_erred.append(source_key)
+                        break
+            if isinstance(report, ErrorReport):
+                # These indicate an error that came from this source
+                # Log it and move along.
+                # if it was recoverable we'll get something else next time.
+                # if it was not recoverable we'll see this again from this
+                # source. Thus we'll just log this at the debug level.
+                self.logger.debug('ErrorReport received for source: %s' % source_key)
+                if self._oneshot:
+                    # Consider this source dealt with if we are in oneshot mode
+                    sources_sent.append(source_key)
 
         # Terminate this thread if we have sent one report for each source
         if all(source_key in sources_sent for source_key in self.source_keys)\
@@ -631,7 +718,7 @@ class DestinationThread(IntervalThread):
             else:
                 self.logger.debug('All info to print has been gathered. '
                                   'Terminating.')
-            self._internal_terminate_event.set()
+            self.stop()
         if self._oneshot:
             # Remove sources we have sent (or dealt with) so that we don't
             # do extra work on the next run, should we have missed any sources
@@ -656,9 +743,6 @@ class Virt(IntervalThread):
         super(Virt, self).__init__(logger, config, dest=dest,
                                    terminate_event=terminate_event,
                                    interval=interval, oneshot=oneshot)
-
-    def __repr__(self):
-        return '{1}({0.logger!r}, {0.config!r})'.format(self, self.__class__.__name__)
 
     @classmethod
     def from_config(cls, logger, config, dest,
@@ -736,3 +820,10 @@ class Virt(IntervalThread):
         return value of isHypervisor method.
         '''
         raise NotImplementedError('This should be reimplemented in subclass')
+
+
+info_to_destination_class = {
+    Satellite5DestinationInfo: Satellite5DestinationThread,
+    Satellite6DestinationInfo: DestinationThread,
+    DefaultDestinationInfo: DestinationThread,
+}

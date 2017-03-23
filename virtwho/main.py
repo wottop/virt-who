@@ -205,7 +205,6 @@ def main():
 
 
 def _main(executor):
-    result = None
     if executor.options.oneshot:
         result = executor.run_oneshot()
 

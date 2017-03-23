@@ -51,18 +51,11 @@ class Executor(object):
         for config in self.configManager.configs:
             logger.debug("Using config named '%s'" % config.name)
 
-    def _create_virt_backends(self, virts, reset=False):
-        """Populate self.virts with virt backend threads
-
-            @param reset: Whether to kill existing backends or not, defaults
-            to false
-            @type: bool
+    def _create_virt_backends(self):
         """
-        if reset and virts is not None and len(virts) > 0:
-            self.terminate_threads(virts)
-
+        Create virts list with virt backend threads
+        """
         virts = []
-
         for config in self.configManager.configs:
             try:
                 logger = log.getLogger(config=config)
@@ -76,23 +69,18 @@ class Executor(object):
             virts.append(virt)
         return virts
 
-    def _create_destinations(self, dests, reset=False):
+    def _create_destinations(self):
         """Populate self.destinations with a list of  list with them
 
             @param reset: Whether to kill existing destinations or not, defaults
             to false
             @type: bool
         """
-        if reset and dests is not None and \
-                        len(dests) > 0:
-            self.terminate_threads(dests)
-
         dests = []
-
         for info in self.configManager.dests:
-            # Dests should already include the dest parsed from the CLI/env
-            # If there is not a valid dest parsed from the CLI/env we'll have
-            # to create a dest with
+            # Dests should already include all destinations we want created
+            # at this time. This method will make no assumptions of creating
+            # defaults of any kind.
             source_keys = self.configManager.dest_to_sources_map[info]
             info.name = "destination_%s" % hash(info)
             logger = log.getLogger(name=info.name)
@@ -155,20 +143,20 @@ class Executor(object):
 
     def run_oneshot(self):
         # Start all sources
-        self.virts = self._create_virt_backends(self.virts)
+        self.virts = self._create_virt_backends()
 
         if len(self.virts) == 0:
             err = "virt-who can't be started: no suitable virt backend found"
             self.logger.error(err)
-            self.stop_threads()
+            self.terminate()
             sys.exit(err)
 
-        self.destinations = self._create_destinations(self.destinations)
+        self.destinations = self._create_destinations()
 
         if len(self.destinations) == 0:
             err = "virt-who can't be started: no suitable destinations found"
             self.logger.error(err)
-            self.stop_threads()
+            self.terminate()
             sys.exit(err)
 
         for thread in self.virts:
@@ -194,37 +182,28 @@ class Executor(object):
         Executor.wait_on_threads(self.destinations)
 
     def run(self):
-        if not self.reloading:
-            self.logger.debug("Starting infinite loop with %d seconds interval", self.options.interval)
-        else:
-            self.logger.debug("Restarting infinite loop with %d seconds "
-                              "interval", self.options.interval)
-            # Clear out old reports from the in-memory datastore
-            self.datastore = Datastore()
+        self.logger.debug("Starting infinite loop with %d seconds interval", self.options.interval)
 
         # Need to update the dest to source mapping of the configManager object
         # here because of the way that main reads the config from the command
         # line
+        # TODO: Update dests to source map on addition or removal of configs
         self.configManager.update_dest_to_source_map()
         # Start all sources
-        self.virts = self._create_virt_backends(self.virts,
-                                                reset=self.reloading)
+        self.virts = self._create_virt_backends()
 
         if len(self.virts) == 0:
             err = "virt-who can't be started: no suitable virt backend found"
             self.logger.error(err)
-            self.stop_threads()
+            self.terminate()
             sys.exit(err)
 
-        self.destinations = self._create_destinations(self.destinations,
-                                                      reset=self.reloading)
+        self.destinations = self._create_destinations()
         if len(self.destinations) == 0:
             err = "virt-who can't be started: no suitable destinations found"
             self.logger.error(err)
-            self.stop_threads()
+            self.terminate()
             sys.exit(err)
-
-        self.reloading = False
 
         for thread in self.virts:
             thread.start()
@@ -235,37 +214,24 @@ class Executor(object):
         # Interruptibly wait on the other threads to be terminated
         self.wait_on_threads(self.destinations)
 
-        self.stop_threads()
-
-    def terminated(self):
-        """
-        @return: Returns whether or not we have terminated
-        @rtype: bool
-        """
-        result = True
-        if self.destinations and self.virts:
-            all_dests_terminated = all([thread.is_terminated() for thread in
-                         self.destinations])
-            all_virts_terminated = all([thread.is_terminated() for thread in
-                                self.virts])
-            result = all_dests_terminated and all_virts_terminated
-        return result
+        self.terminate()
 
     def stop_threads(self):
-        if self.terminate_event.is_set():
-            return
         self.terminate_event.set()
         self.terminate_threads(self.virts)
-        self.virts = []
         self.terminate_threads(self.destinations)
-        self.destinations = []
 
     def terminate(self):
         self.logger.debug("virt-who is shutting down")
         self.stop_threads()
+        self.virts = []
+        self.destinations = []
+        self.datastore = None
 
     def reload(self):
-        self.logger.warn("virt-who reload")
-        # Set the terminate event in all the virts
-        self.reloading = True
-
+        """
+        Causes all threads to be terminated in preparation for running again
+        """
+        self.stop_threads()
+        self.terminate_event.clear()
+        self.datastore = Datastore()

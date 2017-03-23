@@ -298,7 +298,6 @@ class IntervalThread(Thread):
         self.interval = interval or config.interval or DefaultInterval
         self._oneshot = oneshot
         super(IntervalThread, self).__init__()
-        # self.daemon = True
 
     def wait(self, wait_time):
         '''
@@ -782,6 +781,7 @@ class Virt(IntervalThread):
         else:
             return DomainListReport(self.config, self.listDomains())
 
+    # TODO: Reimplement each virt subclass as a source
     def _get_data(self):
         """
         Gathers the data from the source.

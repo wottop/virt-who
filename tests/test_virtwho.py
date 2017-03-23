@@ -278,16 +278,10 @@ class TestOptions(TestBase):
 
 class TestExecutor(TestBase):
 
-    def test_terminated(self):
-        pass
-
     def test_stop_threads(self):
         pass
 
     def test_terminate(self):
-        pass
-
-    def test_reload(self):
         pass
 
     @patch.object(Executor, 'terminate_threads')
@@ -325,9 +319,3 @@ class TestExecutor(TestBase):
         for mock_thread in threads:
             mock_thread.stop.assert_called()
             mock_thread.join.assert_called()
-
-    def test_run_oneshot(self):
-        pass
-
-    def test_run(self):
-        pass

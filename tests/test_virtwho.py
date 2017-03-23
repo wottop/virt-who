@@ -25,8 +25,6 @@ from mock import patch, Mock, sentinel, ANY, call
 
 from base import TestBase
 
-from stubs import StubDatastore
-
 from virtwho import util
 from virtwho.config import Config, ConfigManager
 from virtwho.manager import ManagerThrottleError, ManagerFatalError

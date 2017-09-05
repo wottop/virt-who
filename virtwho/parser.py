@@ -325,28 +325,29 @@ def parse_cli_arguments():
         description="Choose virtualization backend that should be used to gather host/guest associations"
     )
     virt_group.add_argument("--libvirt", action=StoreVirtType, dest="virtType", const="libvirt",
-                            default=None, help="Use libvirt to list virtual guests")
+                            default=None, help="[Deprecated] Use libvirt to list virtual guests")
     virt_group.add_argument("--vdsm", action=StoreVirtType, dest="virtType", const="vdsm",
-                            help="Use vdsm to list virtual guests")
+                            help="[Deprecated] Use vdsm to list virtual guests")
     virt_group.add_argument("--esx", action=StoreVirtType, dest="virtType", const="esx",
-                            help="Register ESX machines using vCenter")
+                            help="[Deprecated] Register ESX machines using vCenter")
     virt_group.add_argument("--xen", action=StoreVirtType, dest="virtType", const="xen",
-                            help="Register XEN machines using XenServer")
+                            help="[Deprecated] Register XEN machines using XenServer")
     virt_group.add_argument("--rhevm", action=StoreVirtType, dest="virtType", const="rhevm",
-                            help="Register guests using RHEV-M")
+                            help="[Deprecated] Register guests using RHEV-M")
     virt_group.add_argument("--hyperv", action=StoreVirtType, dest="virtType", const="hyperv",
-                            help="Register guests using Hyper-V")
+                            help="[Deprecated] Register guests using Hyper-V")
 
     manager_group = parser.add_argument_group(
         title="Subscription manager",
         description="Choose where the host/guest associations should be reported"
     )
     manager_group.add_argument("--sam", action="store_const", dest="smType", const=SAT6, default=SAT6,
-                               help="Report host/guest associations to the Subscription Asset Manager [default]")
+                               help="[Deprecated] Report host/guest associations to the Subscription Asset Manager [default]")
     manager_group.add_argument("--satellite6", action="store_const", dest="smType", const=SAT6,
-                               help="Report host/guest associations to the Satellite 6 server")
+                               help="[Deprecated] Report host/guest associations to the Satellite 6 server")
     manager_group.add_argument("--satellite5", action="store_const", dest="smType", const=SAT5,
-                               help="Report host/guest associations to the Satellite 5 server")
+                               help="[Deprecated] Report host/guest associations to the "
+                                    "Satellite 5 server")
     manager_group.add_argument("--satellite", action="store_const", dest="smType", const=SAT5)
 
     # FIXME: Remove all options of virtualization backend. Adding this wasn't happy design decision.
@@ -459,8 +460,44 @@ def parse_options():
     """
     # These options are deprecated
     DEPRECATED_OPTIONS = ['log_per_config', 'log_dir', 'log_file', 'reporter_id',
-                          'libvirt-owner', 'libvirt-env', 'libvirt-server', 'libvirt-username', 'libvirt-password',
-                          'satellite-server', 'satellite-username', 'satellite-password']
+                          'libvirt',
+                          'libvirt-owner',
+                          'libvirt-env',
+                          'libvirt-server',
+                          'libvirt-username',
+                          'libvirt-password',
+                          'esx',
+                          'esx-owner',
+                          'esx-env',
+                          'esx-server',
+                          'esx-username',
+                          'esx-password',
+                          'rhevm',
+                          'rhevm-owner',
+                          'rhevm-env',
+                          'rhevm-server',
+                          'rhevm-username',
+                          'rhevm-password',
+                          'hyperv',
+                          'hyperv-owner',
+                          'hyperv-env',
+                          'hyperv-server',
+                          'hyperv-username',
+                          'hyperv-password',
+                          'xen',
+                          'xen-owner',
+                          'xen-env',
+                          'xen-server',
+                          'xen-username',
+                          'xen-password',
+                          'satellite',
+                          'satellite-server',
+                          'satellite-username',
+                          'satellite-password',
+                          'satellite6',
+                          'satellite5',
+                          'sam'
+                          ]
 
     # Read command line arguments first
     cli_options, defaults = parse_cli_arguments()

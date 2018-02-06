@@ -642,8 +642,9 @@ class ConfigSection(collections.MutableMapping):
         When option is not set, then this methods tries to set such option to default value.
         """
         for key in self._invalid_keys.union(self.defaults.keys()):
-            if self.has_default(key) and key not in self._values:
+            if self.has_default(key) and (key not in self._values or key in self._invalid_keys):
                 self._values[key] = self.defaults[key]
+                self._invalid_keys.discard(key)
                 if key in self._required_keys and key not in self._restricted:
                     message = 'Required option: "%s" is missing in: "%s" using default "%s"' % \
                               (key, self.name, self.defaults[key])
@@ -779,9 +780,9 @@ class ConfigSection(collections.MutableMapping):
                 result = ('warning', 'Value for %s not set' % key)
         else:
             if not isinstance(value, str):
-                result = ('warning', '%s is not set to a valid string, using default' % key)
+                result = ('error', '%s is not set to a valid string, using default' % key)
             elif len(value) == 0:
-                result = ('warning', '%s cannot be empty, using default' % key)
+                result = ('error', '%s cannot be empty, using default' % key)
         return result
 
     def _validate_list(self, list_key):

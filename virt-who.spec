@@ -20,7 +20,7 @@
 
 
 Name:           virt-who
-Version:        0.24.4
+Version:        0.24.5
 Release:        %{release_number}%{?dist}
 
 Summary:        Agent for reporting virtual guest IDs to subscription-manager
@@ -168,6 +168,9 @@ fi
 
 
 %changelog
+* Thu Apr 04 2019 William Poteat <wpoteat@redhat.com> 0.24.5-1
+- test (wpoteat@redhat.com)
+
 * Wed Apr 03 2019 William Poteat <wpoteat@redhat.com> 0.24.4-1
 - 1667522: Omit ESX host from report when no hostname is present
   (wpoteat@redhat.com)

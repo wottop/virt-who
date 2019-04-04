@@ -20,7 +20,7 @@ srpm:
 	tito build --srpm --test
 
 rpm:
-	tito build --rpm --test
+	tito build --rpm
 
 rpmlint:
 	$(eval tmpdir := $(shell mktemp -d))

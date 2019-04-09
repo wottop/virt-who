@@ -15,7 +15,7 @@ To just install it use:
 # make DESTDIR=/usr install
 ```
 
-You can also create rpm package with:
+You can also create rpm package with something:
 
 ```
 $ make rpm

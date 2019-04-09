@@ -20,7 +20,7 @@
 
 
 Name:           virt-who
-Version:        0.24.5
+Version:        0.24.6
 Release:        %{release_number}%{?dist}
 
 Summary:        Agent for reporting virtual guest IDs to subscription-manager
@@ -168,6 +168,9 @@ fi
 
 
 %changelog
+* Tue Apr 09 2019 William Poteat <wpoteat@redhat.com> 0.24.6-1
+- This is an ascii char § (wpoteat@redhat.com)
+
 * Thu Apr 04 2019 William Poteat <wpoteat@redhat.com> 0.24.5-1
 - New change (wpoteat@redhat.com)
 
